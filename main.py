@@ -1,55 +1,47 @@
 import os
 import json
-import streamlit as st
+from flask import Flask, request, jsonify
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import urllib.request
 
-# Load credentials from environment variable
+app = Flask(__name__)
+
+# Load and parse service account credentials
 service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = service_account.Credentials.from_service_account_info(service_account_info)
 
-@st.cache_resource
-def setup_drive():
-    return build("drive", "v3", credentials=credentials)
+# Initialize Drive service (if needed)
+drive_service = build("drive", "v3", credentials=credentials)
 
-drive_service = setup_drive()
+@app.route("/", methods=["GET"])
+def index():
+    return "AI Quartet Evaluator API is running."
 
-# Streamlit UI
-st.title("AI Quartet Singing Evaluation")
+@app.route("/evaluate", methods=["POST"])
+def evaluate():
+    try:
+        data = request.get_json()
+        email = data.get("email")
+        student_url = data.get("student_url")
+        professor_url = data.get("professor_url")
 
-# Handle JSON POST if from Zapier
-if st.runtime.exists():
-    if "REQUEST_METHOD" in os.environ and os.environ["REQUEST_METHOD"] == "POST":
-        # Read body (from Zapier)
-        request_body = st.request.body.decode("utf-8")
-        data = json.loads(request_body)
+        if not all([email, student_url, professor_url]):
+            return jsonify({"error": "Missing fields"}), 400
 
-        student_email = data.get("email")
-        student_audio_url = data.get("student_url")
-        professor_audio_url = data.get("professor_url")
+        # TODO: Add Deepgram + comparison logic here
 
-        result = {
-            "email": student_email,
-            "student_url": student_audio_url,
-            "professor_url": professor_audio_url,
-            "status": "Evaluation complete (mock result)"
-        }
+        return jsonify({
+            "email": email,
+            "student_url": student_url,
+            "professor_url": professor_url,
+            "status": "Evaluation complete (mock)",
+            "visual_graph_url": "https://example.com/mock-graph.png"
+        })
 
-        st.json(result)  # Response to Zapier
-    else:
-        # Manual test mode
-        student_email = st.text_input("Student Email")
-        student_audio_url = st.text_input("Student Audio URL (Google Drive share link)")
-        professor_audio_url = st.text_input("Professor Audio URL (Google Drive share link)")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-        if st.button("Submit for Evaluation"):
-            result = {
-                "email": student_email,
-                "student_url": student_audio_url,
-                "professor_url": professor_audio_url,
-                "status": "Evaluation complete (mock result)"
-            }
-            st.success("✅ Submission received.")
-            st.json(result)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
+
 
