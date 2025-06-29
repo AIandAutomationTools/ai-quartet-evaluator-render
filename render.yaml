@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ai-quartet-evaluator
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > service_account.json
+      python main.py
+    envVars:
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
