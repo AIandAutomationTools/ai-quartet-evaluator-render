@@ -10,10 +10,10 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# ─── Flask App ──────────────────────────────────────────────────────────
+# ─── Flask App ──────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
-# ─── Google Drive Auth ──────────────────────────────────────────────────
+# ─── Google Drive Auth ───────────────────────────────────────────────────────
 def get_drive_service():
     try:
         service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
@@ -27,7 +27,7 @@ def get_drive_service():
 
 drive_service = get_drive_service()
 
-# ─── Flask Routes ───────────────────────────────────────────────────────
+# ─── Flask Routes ────────────────────────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def hello():
     return "✅ AI Quartet Evaluator API is running."
@@ -36,15 +36,14 @@ def hello():
 def evaluate():
     try:
         data = request.json
-        email = data.get("email")
-        student_url = data.get("student_url")
-        professor_url = data.get("professor_url")
+        email = data.get("email", "").strip()
+        student_url = data.get("student_url", "").strip()
+        professor_url = data.get("professor_url", "").strip()
 
         print("📥 Incoming request:", data)
 
         if not email or not student_url or not professor_url:
-            print("❌ Missing fields.")
-            return jsonify({"error": "Missing fields"}), 400
+            return jsonify({"error": "Missing required fields"}), 400
 
         # Step 1: Download audio files
         student_file = download_audio(student_url, "student.mp3")
@@ -53,7 +52,7 @@ def evaluate():
         print(f"📁 Student file saved: {student_file} ({os.path.getsize(student_file)} bytes)")
         print(f"📁 Professor file saved: {professor_file} ({os.path.getsize(professor_file)} bytes)")
 
-        # Step 2: Generate graph
+        # Step 2: Create pitch graph
         graph_path = f"comparison_{email.replace('@', '_')}.png"
         create_pitch_graph(student_file, professor_file, graph_path)
 
@@ -64,7 +63,7 @@ def evaluate():
 
         print(f"✅ Graph uploaded to Google Drive: {graph_url}")
 
-        # Step 4: Return result
+        # Step 4: Return JSON response
         return jsonify({
             "email": email,
             "student_url": student_url,
@@ -79,18 +78,33 @@ def evaluate():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# ─── Utilities ──────────────────────────────────────────────────────────
+# ─── Download Utility ────────────────────────────────────────────────────────
 def download_audio(url, filename):
+    if not url or "http" not in url:
+        raise Exception(f"Invalid URL: {url}")
+    
+    print(f"🌐 Downloading from: {url}")
     response = requests.get(url)
+    
+    print("🧾 Response headers:", response.headers)
+    content_type = response.headers.get("Content-Type", "N/A")
+    print("🔗 Content-Type:", content_type)
+
     if response.status_code == 200:
         with open(filename, "wb") as f:
             f.write(response.content)
+
+        if "text/html" in content_type:
+            raise Exception("Downloaded file is HTML, not an MP3. Check Drive permissions or link format.")
+
         if os.path.getsize(filename) < 1000:
-            raise Exception(f"Downloaded file from {url} is too small or empty.")
+            raise Exception("Downloaded file is too small. Possibly invalid or empty.")
+        
         return filename
     else:
         raise Exception(f"Failed to download file from: {url} (HTTP {response.status_code})")
 
+# ─── Plotting Utility ────────────────────────────────────────────────────────
 def create_pitch_graph(student_file, professor_file, graph_path):
     student_audio, sr = librosa.load(student_file, sr=None)
     professor_audio, _ = librosa.load(professor_file, sr=sr)
@@ -100,7 +114,7 @@ def create_pitch_graph(student_file, professor_file, graph_path):
 
     max_len = min(len(student_audio), len(professor_audio), sr * 10)
     if max_len == 0:
-        raise Exception("Audio data length is zero; cannot generate graph.")
+        raise Exception("Audio length is zero; cannot graph.")
 
     plt.figure(figsize=(12, 4))
     plt.plot(student_audio[:max_len], label="Student", alpha=0.7)
@@ -113,6 +127,7 @@ def create_pitch_graph(student_file, professor_file, graph_path):
     plt.savefig(graph_path)
     plt.close()
 
+# ─── Google Drive Upload Utility ─────────────────────────────────────────────
 def upload_to_drive(service, file_path, folder_id):
     file_metadata = {
         "name": os.path.basename(file_path),
@@ -123,7 +138,7 @@ def upload_to_drive(service, file_path, folder_id):
     file_id = uploaded.get("id")
     return f"https://drive.google.com/uc?id={file_id}"
 
-# ─── Run Locally (Optional) ─────────────────────────────────────────────
+# ─── Local Run Mode ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 
