@@ -31,5 +31,6 @@ def compare_audio(student_file, professor_file):
 
     # Trim both to the same length
     min_len = min(len(y_student), len(y_professor))
-    y_student = y_student[:min_len]_]()
+    y_student = y_student[:min_len]
+
 
