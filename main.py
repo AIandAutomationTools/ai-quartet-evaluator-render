@@ -1,46 +1,46 @@
-import os
-import requests
 from flask import Flask, request, jsonify
+import requests
+import librosa
+import numpy as np
+import os
 
 app = Flask(__name__)
 
-def download_file(url, filename):
-    url = url.strip()  # Remove leading/trailing spaces just in case
-    print(f"🌐 Downloading from: {url}")
-    response = requests.get(url)
-    if response.status_code == 200:
-        with open(filename, "wb") as f:
-            f.write(response.content)
-        print(f"📁 {filename} saved ({len(response.content)} bytes)")
-        return True
-    else:
-        print(f"❌ Failed to download {url}, status code: {response.status_code}")
-        return False
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        student_url = data.get('student_url').strip()
+        professor_url = data.get('professor_url').strip()
 
-@app.route("/", methods=["POST"])
-def evaluate():
-    data = request.json
-    print(f"📥 Incoming request: {data}")
+        # Download audio files
+        student_path = 'student.mp3'
+        professor_path = 'professor.mp3'
+        download_file(student_url, student_path)
+        download_file(professor_url, professor_path)
 
-    email = data.get("email")
-    student_url = data.get("student_url")
-    professor_url = data.get("professor_url")
+        # Load audio
+        y_student, sr_student = librosa.load(student_path)
+        y_professor, sr_professor = librosa.load(professor_path)
 
-    if not all([email, student_url, professor_url]):
-        return jsonify({"error": "Missing one of the required fields: email, student_url, professor_url"}), 400
+        # Trim to same length
+        min_len = min(len(y_student), len(y_professor))
+        y_student = y_student[:min_len]
+        y_professor = y_professor[:min_len]
 
-    # Download files
-    if not download_file(student_url, "student.mp3"):
-        return jsonify({"error": "Failed to download student mp3 file"}), 400
-    if not download_file(professor_url, "professor.mp3"):
-        return jsonify({"error": "Failed to download professor mp3 file"}), 400
+        # Compare pitch
+        student_pitch = librosa.yin(y_student, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        professor_pitch = librosa.yin(y_professor, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        pitch_diff = np.abs(student_pitch - professor_pitch).mean()
 
-    # Here you can add your audio processing and evaluation logic
-    # For now, just return a success message
+        # Compare timing (tempo)
+        tempo_student, _ = librosa.beat.beat_track(y=y_student, sr=sr_student)
+        tempo_professor, _ = librosa.beat.beat_track(y=y_professor, sr=sr_professor)
+        tempo_diff = abs(tempo_student - tempo_professor)
 
-    return jsonify({"message": "Files downloaded successfully", "email": email})
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Render sets PORT environment variable
-    app.run(host="0.0.0.0", port=port)
+        # Feedback
+        feedback = {
+            "email": email,
+            "pitch_difference": round(float(pitch_diff), 2
 
