@@ -1,36 +1,46 @@
-from flask import Flask, request, jsonify
-import requests
-import librosa
-import numpy as np
 import os
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+import requests
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Set your Google Drive folder ID (create one and copy the ID from the URL)
-DRIVE_FOLDER_ID = 'your_google_drive_folder_id_here'
-SERVICE_ACCOUNT_FILE = 'service_account.json'  # Upload this file to Render
-
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-
 def download_file(url, filename):
-    url = url.strip()  # remove extra spaces
+    url = url.strip()  # Remove leading/trailing spaces just in case
     print(f"🌐 Downloading from: {url}")
     response = requests.get(url)
-    if response.status_code != 200:
-        raise Exception(f"Failed to download file: {url}")
-    with open(filename, 'wb') as f:
-        f.write(response.content)
-    print(f"📁 {filename} saved ({len(response.content)} bytes)")
+    if response.status_code == 200:
+        with open(filename, "wb") as f:
+            f.write(response.content)
+        print(f"📁 {filename} saved ({len(response.content)} bytes)")
+        return True
+    else:
+        print(f"❌ Failed to download {url}, status code: {response.status_code}")
+        return False
 
-def compare_audio(student_file, professor_file):
-    y_student, sr_student = librosa.load(student_file, sr=None)
-    y_professor, sr_professor = librosa.load(professor_file, sr=None)
+@app.route("/", methods=["POST"])
+def evaluate():
+    data = request.json
+    print(f"📥 Incoming request: {data}")
 
-    # Trim both to the same length
-    min_len = min(len(y_student), len(y_professor))
-    y_student = y_student[:min_len]
+    email = data.get("email")
+    student_url = data.get("student_url")
+    professor_url = data.get("professor_url")
 
+    if not all([email, student_url, professor_url]):
+        return jsonify({"error": "Missing one of the required fields: email, student_url, professor_url"}), 400
+
+    # Download files
+    if not download_file(student_url, "student.mp3"):
+        return jsonify({"error": "Failed to download student mp3 file"}), 400
+    if not download_file(professor_url, "professor.mp3"):
+        return jsonify({"error": "Failed to download professor mp3 file"}), 400
+
+    # Here you can add your audio processing and evaluation logic
+    # For now, just return a success message
+
+    return jsonify({"message": "Files downloaded successfully", "email": email})
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))  # Render sets PORT environment variable
+    app.run(host="0.0.0.0", port=port)
 
