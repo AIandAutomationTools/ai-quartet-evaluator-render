@@ -1,85 +1,82 @@
 from flask import Flask, request, jsonify
+import threading
 import requests
+import os
 import librosa
 import numpy as np
 import soundfile as sf
-import os
 
 app = Flask(__name__)
 
+# Utility to download MP3 files from Google Drive direct links
 def download_file(url, filename):
-    response = requests.get(url, stream=True)
-    if response.status_code == 200:
-        with open(filename, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-    else:
-        raise Exception(f"Failed to download file: {url}")
-
-def analyze_audio(student_path, professor_path):
-    # Load audio files
-    y_student, sr_student = librosa.load(student_path)
-    y_professor, sr_professor = librosa.load(professor_path)
-
-    # Ensure sample rates match
-    if sr_student != sr_professor:
-        raise Exception("Sample rates do not match")
-
-    # Trim to the shorter length
-    min_len = min(len(y_student), len(y_professor))
-    y_student = y_student[:min_len]
-    y_professor = y_professor[:min_len]
-
-    # Pitch analysis (estimate fundamental frequency)
-    f0_student, _, _ = librosa.pyin(y_student, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-    f0_professor, _, _ = librosa.pyin(y_professor, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-
-    # Remove NaNs and pad with median if necessary
-    f0_student = np.nan_to_num(f0_student, nan=np.nanmedian(f0_student))
-    f0_professor = np.nan_to_num(f0_professor, nan=np.nanmedian(f0_professor))
-
-    pitch_diff = np.mean(np.abs(f0_student - f0_professor))
-
-    # Timing analysis (onset)
-    onsets_student = librosa.onset.onset_detect(y_student, sr=sr_student)
-    onsets_professor = librosa.onset.onset_detect(y_professor, sr=sr_professor)
-
-    timing_diff = np.abs(np.mean(onsets_student) - np.mean(onsets_professor))
-
-    return {
-        "pitch_difference": round(float(pitch_diff), 2),
-        "timing_difference": round(float(timing_diff), 2)
-    }
-
-@app.route("/", methods=["POST"])
-def evaluate():
     try:
-        data = request.get_json()
-        email = data.get("email")
-        student_url = data.get("student_url", "").strip()
-        professor_url = data.get("professor_url", "").strip()
+        response = requests.get(url)
+        if response.status_code == 200:
+            with open(filename, "wb") as f:
+                f.write(response.content)
+            print(f"Downloaded {filename}")
+        else:
+            raise Exception(f"Failed to download file: {url}")
+    except Exception as e:
+        raise Exception(f"Download error: {e}")
 
-        if not student_url or not professor_url:
-            return jsonify({"error": "Missing URLs"}), 400
+# Utility to extract pitch and timing features
+def extract_pitch_timing(audio_path):
+    try:
+        y, sr = librosa.load(audio_path, sr=None)
+        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+        pitch = np.mean(pitches[pitches > 0]) if np.any(pitches > 0) else 0.0
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        return pitch, tempo
+    except Exception as e:
+        print(f"Audio analysis error: {e}")
+        return 0.0, 0.0
 
+# Background processing task
+def process_student_submission(data):
+    try:
+        student_url = data["student_url"]
+        professor_url = data["professor_url"]
+        callback_url = data["callback_url"]
+        student_email = data.get("student_email", "unknown")
+
+        # Download files
         download_file(student_url, "student.mp3")
-    except Exception as e:
-        return jsonify({"error": f"Failed to download student file: {str(e)}"}), 500
-
-    try:
         download_file(professor_url, "professor.mp3")
-    except Exception as e:
-        return jsonify({"error": f"Failed to download professor file: {str(e)}"}), 500
 
-    try:
-        result = analyze_audio("student.mp3", "professor.mp3")
-    except Exception as e:
-        return jsonify({"error": f"Audio analysis failed: {str(e)}"}), 500
+        # Extract pitch and timing
+        student_pitch, student_tempo = extract_pitch_timing("student.mp3")
+        professor_pitch, professor_tempo = extract_pitch_timing("professor.mp3")
 
-    return jsonify({
-        "email": email,
-        "result": result
-    })
+        # Compare values
+        pitch_diff = abs(student_pitch - professor_pitch)
+        timing_diff = abs(student_tempo - professor_tempo)
+
+        # Prepare result
+        result = {
+            "student_email": student_email,
+            "score": max(0, 100 - (pitch_diff * 10 + timing_diff * 5)),  # basic scoring
+            "pitch_difference": round(pitch_diff, 2),
+            "timing_difference": round(timing_diff, 2)
+        }
+
+        # Callback to Zapier
+        response = requests.post(callback_url, json=result)
+        print(f"Sent results to Zapier. Status: {response.status_code}")
+    except Exception as e:
+        print(f"Processing failed: {e}")
+
+@app.route("/submit", methods=["POST"])
+def submit():
+    data = request.get_json()
+    threading.Thread(target=process_student_submission, args=(data,)).start()
+    return jsonify({"status": "received", "message": "Evaluation started."}), 200
+
+@app.route("/", methods=["GET"])
+def home():
+    return "AI Quartet Evaluator is running.", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True, port=5000)
+
