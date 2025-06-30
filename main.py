@@ -5,6 +5,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 import os
+import json
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 from datetime import datetime
@@ -13,17 +14,17 @@ app = Flask(__name__)
 
 # Google Drive setup
 gauth = GoogleAuth()
-gauth.LoadCredentialsFile("service_account.json")
+gauth.LocalWebserverAuth()
 drive = GoogleDrive(gauth)
 
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Change if needed
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Replace with your actual folder ID
 
 def download_file(url, filename):
     try:
-        r = requests.get(url)
+        r = requests.get(url.strip())
         r.raise_for_status()
         with open(filename, "wb") as f:
             f.write(r.content)
@@ -41,12 +42,12 @@ def compare_audio(student_path, professor_path):
     y_student = y_student[:min_len]
     y_professor = y_professor[:min_len]
 
-    # Pitch difference
+    # Pitch (chroma_stft)
     chroma_student = librosa.feature.chroma_stft(y=y_student, sr=sr_student)
     chroma_professor = librosa.feature.chroma_stft(y=y_professor, sr=sr_professor)
     pitch_diff = np.mean(np.abs(chroma_student - chroma_professor))
 
-    # Timing difference
+    # Timing (RMS energy)
     rms_student = librosa.feature.rms(y=y_student)[0]
     rms_professor = librosa.feature.rms(y=y_professor)[0]
     rms_diff = np.mean(np.abs(rms_student - rms_professor))
@@ -71,14 +72,11 @@ def process_and_callback(data):
         student_url = data["student_url"].strip()
         professor_url = data["professor_url"].strip()
         email = data["student_email"]
-        callback_url = data["callback_url"].strip()
+        callback_url = data["callback_url"]
 
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         student_path = f"{UPLOAD_FOLDER}/student_{timestamp}.mp3"
         professor_path = f"{UPLOAD_FOLDER}/professor_{timestamp}.mp3"
-
-        print(f"Downloading student file from {student_url}")
-        print(f"Downloading professor file from {professor_url}")
 
         if not download_file(student_url, student_path) or not download_file(professor_url, professor_path):
             requests.post(callback_url, json={"error": "File download failed", "student_email": email})
@@ -86,21 +84,24 @@ def process_and_callback(data):
 
         pitch_diff, timing_diff = compare_audio(student_path, professor_path)
 
-        result_txt = f"Pitch Difference: {round(pitch_diff, 2)}\nTiming Difference: {round(timing_diff, 2)}\n"
+        # Generate feedback file
+        result_txt = (
+            f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
+            f"Timing Difference: {round(float(timing_diff), 2)}\n"
+        )
         feedback_path = f"{UPLOAD_FOLDER}/feedback_{timestamp}.txt"
         with open(feedback_path, "w") as f:
             f.write(result_txt)
 
         drive_url = upload_to_drive(feedback_path)
 
+        # Callback payload (cast values to float for JSON serialization)
         result = {
             "student_email": email,
-            "pitch_difference": round(pitch_diff, 2),
-            "timing_difference": round(timing_diff, 2),
+            "pitch_difference": float(round(pitch_diff, 2)),
+            "timing_difference": float(round(timing_diff, 2)),
             "feedback_url": drive_url
         }
-
-        print(f"Sending result to callback URL: {callback_url}")
         requests.post(callback_url, json=result)
 
         # Cleanup
@@ -111,10 +112,14 @@ def process_and_callback(data):
     except Exception as e:
         print(f"Processing error: {e}")
         if "callback_url" in data:
-            try:
-                requests.post(data["callback_url"], json={"error": str(e), "student_email": data.get("student_email")})
-            except:
-                print("Callback failed.")
+            requests.post(data["callback_url"], json={
+                "error": str(e),
+                "student_email": data.get("student_email", "")
+            })
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Quartet Evaluator is running!", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -123,11 +128,9 @@ def webhook():
         return jsonify({"error": "Missing JSON data"}), 400
 
     threading.Thread(target=process_and_callback, args=(data,)).start()
-    return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
 
-@app.route("/", methods=["GET"])
-def index():
-    return jsonify({"message": "AI Quartet Evaluator is live."})
+    return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
