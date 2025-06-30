@@ -1,116 +1,127 @@
 from flask import Flask, request, jsonify
 import threading
 import requests
-import os
 import librosa
 import numpy as np
 import soundfile as sf
-import matplotlib.pyplot as plt
+import os
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
-import librosa.display
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Authenticate Google Drive
-def authenticate_drive():
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("service_account.json")
-    gauth.LocalWebserverAuth()
-    return GoogleDrive(gauth)
+# Google Drive setup
+gauth = GoogleAuth()
+gauth.LoadCredentialsFile("service_account.json")
+drive = GoogleDrive(gauth)
 
-# Download MP3
+UPLOAD_FOLDER = "downloads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Google Drive folder for evaluations
+
 def download_file(url, filename):
-    r = requests.get(url)
-    r.raise_for_status()
-    with open(filename, 'wb') as f:
-        f.write(r.content)
-
-# Generate waveform image
-def generate_waveform(mp3_path, output_img):
-    y, sr = librosa.load(mp3_path)
-    plt.figure(figsize=(10, 4))
-    librosa.display.waveshow(y, sr=sr)
-    plt.title('Waveform')
-    plt.tight_layout()
-    plt.savefig(output_img)
-    plt.close()
-
-# Upload image to Google Drive
-def upload_to_drive(filepath, folder_id):
-    drive = authenticate_drive()
-    file_drive = drive.CreateFile({'title': os.path.basename(filepath), 'parents': [{'id': folder_id}]})
-    file_drive.SetContentFile(filepath)
-    file_drive.Upload()
-    return f"https://drive.google.com/uc?id={file_drive['id']}"
-
-# Analyze pitch and timing
-def analyze_audio(student_file, professor_file):
-    y_s, sr_s = librosa.load(student_file)
-    y_p, sr_p = librosa.load(professor_file)
-    min_len = min(len(y_s), len(y_p))
-    y_s = y_s[:min_len]
-    y_p = y_p[:min_len]
-    pitch_s = librosa.yin(y_s, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-    pitch_p = librosa.yin(y_p, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-    pitch_diff = np.mean(np.abs(pitch_s - pitch_p))
-    onset_s = librosa.onset.onset_detect(y=y_s, sr=sr_s)
-    onset_p = librosa.onset.onset_detect(y=y_p, sr=sr_p)
-    timing_diff = np.mean(np.abs(onset_s - onset_p)) if len(onset_s) == len(onset_p) else -1
-    return round(float(pitch_diff), 2), round(float(timing_diff), 2)
-
-# Async processing
-def process_audio_async(student_url, professor_url, student_email, callback_url):
     try:
-        # Save files
-        download_file(student_url, "student.mp3")
-        download_file(professor_url, "professor.mp3")
+        r = requests.get(url)
+        r.raise_for_status()
+        with open(filename, "wb") as f:
+            f.write(r.content)
+        return True
+    except Exception as e:
+        print(f"Download error: {e}")
+        return False
 
-        # Analyze audio
-        pitch_diff, timing_diff = analyze_audio("student.mp3", "professor.mp3")
+def compare_audio(student_path, professor_path):
+    y_student, sr_student = librosa.load(student_path)
+    y_professor, sr_professor = librosa.load(professor_path)
 
-        # Waveform
-        waveform_img = "waveform.png"
-        generate_waveform("student.mp3", waveform_img)
-        waveform_url = upload_to_drive(waveform_img, "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k")
+    # Match length
+    min_len = min(len(y_student), len(y_professor))
+    y_student = y_student[:min_len]
+    y_professor = y_professor[:min_len]
 
-        # Clean up
-        os.remove("student.mp3")
-        os.remove("professor.mp3")
-        os.remove(waveform_img)
+    # Pitch (using chroma_stft)
+    chroma_student = librosa.feature.chroma_stft(y=y_student, sr=sr_student)
+    chroma_professor = librosa.feature.chroma_stft(y=y_professor, sr=sr_professor)
 
-        # POST result to callback_url
-        requests.post(callback_url, json={
-            "status": "success",
-            "student_email": student_email,
-            "analysis": {
-                "pitch_difference": pitch_diff,
-                "timing_difference": timing_diff
-            },
-            "waveform_url": waveform_url
+    pitch_diff = np.mean(np.abs(chroma_student - chroma_professor))
+
+    # Timing (using RMS energy)
+    rms_student = librosa.feature.rms(y=y_student)[0]
+    rms_professor = librosa.feature.rms(y=y_professor)[0]
+    rms_diff = np.mean(np.abs(rms_student - rms_professor))
+
+    return pitch_diff, rms_diff
+
+def upload_to_drive(file_path):
+    try:
+        file = drive.CreateFile({
+            'title': os.path.basename(file_path),
+            'parents': [{'id': STUDENT_EVAL_FOLDER_ID}]
         })
+        file.SetContentFile(file_path)
+        file.Upload()
+        return f"https://drive.google.com/uc?id={file['id']}"
+    except Exception as e:
+        print(f"Drive upload error: {e}")
+        return None
+
+def process_and_callback(data):
+    try:
+        student_url = data["student_url"]
+        professor_url = data["professor_url"]
+        email = data["student_email"]
+        callback_url = data["callback_url"]
+
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        student_path = f"{UPLOAD_FOLDER}/student_{timestamp}.mp3"
+        professor_path = f"{UPLOAD_FOLDER}/professor_{timestamp}.mp3"
+
+        if not download_file(student_url, student_path) or not download_file(professor_url, professor_path):
+            requests.post(callback_url, json={"error": "File download failed", "student_email": email})
+            return
+
+        pitch_diff, timing_diff = compare_audio(student_path, professor_path)
+
+        # Generate feedback file
+        result_txt = f"Pitch Difference: {round(pitch_diff, 2)}\nTiming Difference: {round(timing_diff, 2)}\n"
+        feedback_path = f"{UPLOAD_FOLDER}/feedback_{timestamp}.txt"
+        with open(feedback_path, "w") as f:
+            f.write(result_txt)
+
+        drive_url = upload_to_drive(feedback_path)
+
+        # Callback
+        result = {
+            "student_email": email,
+            "pitch_difference": round(pitch_diff, 2),
+            "timing_difference": round(timing_diff, 2),
+            "feedback_url": drive_url
+        }
+        requests.post(callback_url, json=result)
+
+        # Cleanup
+        for f in [student_path, professor_path, feedback_path]:
+            if os.path.exists(f):
+                os.remove(f)
 
     except Exception as e:
-        # Send error to callback_url
-        requests.post(callback_url, json={
-            "status": "error",
-            "message": str(e),
-            "student_email": student_email
-        })
+        print(f"Processing error: {e}")
+        if "callback_url" in data:
+            requests.post(data["callback_url"], json={"error": str(e), "student_email": data.get("student_email")})
 
-@app.route('/process', methods=['POST'])
-def process():
-    data = request.json
-    student_url = data.get('student_url')
-    professor_url = data.get('professor_url')
-    student_email = data.get('student_email')
-    callback_url = data.get('callback_url')
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON data"}), 400
 
-    # Fire off background task
-    threading.Thread(target=process_audio_async, args=(student_url, professor_url, student_email, callback_url)).start()
+    # Start background thread
+    threading.Thread(target=process_and_callback, args=(data,)).start()
 
-    # Immediate response to Zapier
-    return jsonify({"status": "received"}), 200
+    # Immediate confirmation to Zapier
+    return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
