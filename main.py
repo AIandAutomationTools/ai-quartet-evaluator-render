@@ -1,11 +1,14 @@
 from flask import Flask, request, jsonify
-import requests, os
+import threading
+import requests
+import os
 import librosa
 import numpy as np
 import soundfile as sf
 import matplotlib.pyplot as plt
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
+import librosa.display
 
 app = Flask(__name__)
 
@@ -14,8 +17,7 @@ def authenticate_drive():
     gauth = GoogleAuth()
     gauth.LoadCredentialsFile("service_account.json")
     gauth.LocalWebserverAuth()
-    drive = GoogleDrive(gauth)
-    return drive
+    return GoogleDrive(gauth)
 
 # Download MP3
 def download_file(url, filename):
@@ -37,13 +39,12 @@ def generate_waveform(mp3_path, output_img):
 # Upload image to Google Drive
 def upload_to_drive(filepath, folder_id):
     drive = authenticate_drive()
-    file_drive = drive.CreateFile({'title': os.path.basename(filepath),
-                                   'parents': [{'id': folder_id}]})
+    file_drive = drive.CreateFile({'title': os.path.basename(filepath), 'parents': [{'id': folder_id}]})
     file_drive.SetContentFile(filepath)
     file_drive.Upload()
     return f"https://drive.google.com/uc?id={file_drive['id']}"
 
-# Analyze audio
+# Analyze pitch and timing
 def analyze_audio(student_file, professor_file):
     y_s, sr_s = librosa.load(student_file)
     y_p, sr_p = librosa.load(professor_file)
@@ -58,22 +59,17 @@ def analyze_audio(student_file, professor_file):
     timing_diff = np.mean(np.abs(onset_s - onset_p)) if len(onset_s) == len(onset_p) else -1
     return round(float(pitch_diff), 2), round(float(timing_diff), 2)
 
-@app.route('/process', methods=['POST'])
-def process():
+# Async processing
+def process_audio_async(student_url, professor_url, student_email, callback_url):
     try:
-        data = request.json
-        student_url = data['student_url']
-        professor_url = data['professor_url']
-        student_email = data['student_email']
-
-        # Download files
+        # Save files
         download_file(student_url, "student.mp3")
         download_file(professor_url, "professor.mp3")
 
-        # Analyze
-        pitch, timing = analyze_audio("student.mp3", "professor.mp3")
+        # Analyze audio
+        pitch_diff, timing_diff = analyze_audio("student.mp3", "professor.mp3")
 
-        # Generate waveform & upload
+        # Waveform
         waveform_img = "waveform.png"
         generate_waveform("student.mp3", waveform_img)
         waveform_url = upload_to_drive(waveform_img, "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k")
@@ -83,19 +79,38 @@ def process():
         os.remove("professor.mp3")
         os.remove(waveform_img)
 
-        # Return result
-        return jsonify({
+        # POST result to callback_url
+        requests.post(callback_url, json={
             "status": "success",
             "student_email": student_email,
             "analysis": {
-                "pitch_difference": pitch,
-                "timing_difference": timing
+                "pitch_difference": pitch_diff,
+                "timing_difference": timing_diff
             },
             "waveform_url": waveform_url
         })
 
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        # Send error to callback_url
+        requests.post(callback_url, json={
+            "status": "error",
+            "message": str(e),
+            "student_email": student_email
+        })
+
+@app.route('/process', methods=['POST'])
+def process():
+    data = request.json
+    student_url = data.get('student_url')
+    professor_url = data.get('professor_url')
+    student_email = data.get('student_email')
+    callback_url = data.get('callback_url')
+
+    # Fire off background task
+    threading.Thread(target=process_audio_async, args=(student_url, professor_url, student_email, callback_url)).start()
+
+    # Immediate response to Zapier
+    return jsonify({"status": "received"}), 200
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
