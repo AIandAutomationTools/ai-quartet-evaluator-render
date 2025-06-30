@@ -1,77 +1,101 @@
-import os
-import tempfile
-import requests
 from flask import Flask, request, jsonify
+import requests, os
 import librosa
 import numpy as np
 import soundfile as sf
+import matplotlib.pyplot as plt
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
 
 app = Flask(__name__)
 
+# Authenticate Google Drive
+def authenticate_drive():
+    gauth = GoogleAuth()
+    gauth.LoadCredentialsFile("service_account.json")
+    gauth.LocalWebserverAuth()
+    drive = GoogleDrive(gauth)
+    return drive
+
+# Download MP3
 def download_file(url, filename):
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            with open(filename, 'wb') as f:
-                f.write(response.content)
-            return True
-        else:
-            print(f"Failed to download file: {url}")
-            return False
-    except Exception as e:
-        print(f"Download error: {e}")
-        return False
+    r = requests.get(url)
+    r.raise_for_status()
+    with open(filename, 'wb') as f:
+        f.write(r.content)
 
-def compare_audio(student_file, professor_file):
-    try:
-        y_student, sr_student = librosa.load(student_file)
-        y_professor, sr_professor = librosa.load(professor_file)
+# Generate waveform image
+def generate_waveform(mp3_path, output_img):
+    y, sr = librosa.load(mp3_path)
+    plt.figure(figsize=(10, 4))
+    librosa.display.waveshow(y, sr=sr)
+    plt.title('Waveform')
+    plt.tight_layout()
+    plt.savefig(output_img)
+    plt.close()
 
-        min_len = min(len(y_student), len(y_professor))
-        y_student = y_student[:min_len]
-        y_professor = y_professor[:min_len]
+# Upload image to Google Drive
+def upload_to_drive(filepath, folder_id):
+    drive = authenticate_drive()
+    file_drive = drive.CreateFile({'title': os.path.basename(filepath),
+                                   'parents': [{'id': folder_id}]})
+    file_drive.SetContentFile(filepath)
+    file_drive.Upload()
+    return f"https://drive.google.com/uc?id={file_drive['id']}"
 
-        # Timing difference (cross-correlation)
-        correlation = np.correlate(y_student, y_professor, mode='full')
-        lag = correlation.argmax() - (len(y_professor) - 1)
-
-        # Pitch difference
-        student_pitch = librosa.yin(y_student, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-        professor_pitch = librosa.yin(y_professor, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
-        pitch_diff = np.abs(np.mean(student_pitch) - np.mean(professor_pitch))
-
-        return {
-            "timing_lag_samples": int(lag),
-            "pitch_difference": round(float(pitch_diff), 2)
-        }
-    except Exception as e:
-        return {"error": str(e)}
+# Analyze audio
+def analyze_audio(student_file, professor_file):
+    y_s, sr_s = librosa.load(student_file)
+    y_p, sr_p = librosa.load(professor_file)
+    min_len = min(len(y_s), len(y_p))
+    y_s = y_s[:min_len]
+    y_p = y_p[:min_len]
+    pitch_s = librosa.yin(y_s, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+    pitch_p = librosa.yin(y_p, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+    pitch_diff = np.mean(np.abs(pitch_s - pitch_p))
+    onset_s = librosa.onset.onset_detect(y=y_s, sr=sr_s)
+    onset_p = librosa.onset.onset_detect(y=y_p, sr=sr_p)
+    timing_diff = np.mean(np.abs(onset_s - onset_p)) if len(onset_s) == len(onset_p) else -1
+    return round(float(pitch_diff), 2), round(float(timing_diff), 2)
 
 @app.route('/process', methods=['POST'])
-def process_audio():
+def process():
     try:
         data = request.json
-        student_url = data.get('student_url')
-        professor_url = data.get('professor_url')
+        student_url = data['student_url']
+        professor_url = data['professor_url']
+        student_email = data['student_email']
 
-        if not student_url or not professor_url:
-            return jsonify({"error": "Missing URLs"}), 400
+        # Download files
+        download_file(student_url, "student.mp3")
+        download_file(professor_url, "professor.mp3")
 
-        with tempfile.TemporaryDirectory() as tmpdirname:
-            student_path = os.path.join(tmpdirname, "student.mp3")
-            professor_path = os.path.join(tmpdirname, "professor.mp3")
+        # Analyze
+        pitch, timing = analyze_audio("student.mp3", "professor.mp3")
 
-            if not download_file(student_url, student_path):
-                return jsonify({"error": "Failed to download student file"}), 400
-            if not download_file(professor_url, professor_path):
-                return jsonify({"error": "Failed to download professor file"}), 400
+        # Generate waveform & upload
+        waveform_img = "waveform.png"
+        generate_waveform("student.mp3", waveform_img)
+        waveform_url = upload_to_drive(waveform_img, "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k")
 
-            result = compare_audio(student_path, professor_path)
-            return jsonify(result)
+        # Clean up
+        os.remove("student.mp3")
+        os.remove("professor.mp3")
+        os.remove(waveform_img)
+
+        # Return result
+        return jsonify({
+            "status": "success",
+            "student_email": student_email,
+            "analysis": {
+                "pitch_difference": pitch,
+                "timing_difference": timing
+            },
+            "waveform_url": waveform_url
+        })
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
+    app.run(host="0.0.0.0", port=10000)
