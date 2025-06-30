@@ -1,82 +1,77 @@
-from flask import Flask, request, jsonify
-import threading
-import requests
 import os
+import tempfile
+import requests
+from flask import Flask, request, jsonify
 import librosa
 import numpy as np
 import soundfile as sf
 
 app = Flask(__name__)
 
-# Utility to download MP3 files from Google Drive direct links
 def download_file(url, filename):
     try:
         response = requests.get(url)
         if response.status_code == 200:
-            with open(filename, "wb") as f:
+            with open(filename, 'wb') as f:
                 f.write(response.content)
-            print(f"Downloaded {filename}")
+            return True
         else:
-            raise Exception(f"Failed to download file: {url}")
+            print(f"Failed to download file: {url}")
+            return False
     except Exception as e:
-        raise Exception(f"Download error: {e}")
+        print(f"Download error: {e}")
+        return False
 
-# Utility to extract pitch and timing features
-def extract_pitch_timing(audio_path):
+def compare_audio(student_file, professor_file):
     try:
-        y, sr = librosa.load(audio_path, sr=None)
-        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-        pitch = np.mean(pitches[pitches > 0]) if np.any(pitches > 0) else 0.0
-        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-        return pitch, tempo
-    except Exception as e:
-        print(f"Audio analysis error: {e}")
-        return 0.0, 0.0
+        y_student, sr_student = librosa.load(student_file)
+        y_professor, sr_professor = librosa.load(professor_file)
 
-# Background processing task
-def process_student_submission(data):
-    try:
-        student_url = data["student_url"]
-        professor_url = data["professor_url"]
-        callback_url = data["callback_url"]
-        student_email = data.get("student_email", "unknown")
+        min_len = min(len(y_student), len(y_professor))
+        y_student = y_student[:min_len]
+        y_professor = y_professor[:min_len]
 
-        # Download files
-        download_file(student_url, "student.mp3")
-        download_file(professor_url, "professor.mp3")
+        # Timing difference (cross-correlation)
+        correlation = np.correlate(y_student, y_professor, mode='full')
+        lag = correlation.argmax() - (len(y_professor) - 1)
 
-        # Extract pitch and timing
-        student_pitch, student_tempo = extract_pitch_timing("student.mp3")
-        professor_pitch, professor_tempo = extract_pitch_timing("professor.mp3")
+        # Pitch difference
+        student_pitch = librosa.yin(y_student, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        professor_pitch = librosa.yin(y_professor, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        pitch_diff = np.abs(np.mean(student_pitch) - np.mean(professor_pitch))
 
-        # Compare values
-        pitch_diff = abs(student_pitch - professor_pitch)
-        timing_diff = abs(student_tempo - professor_tempo)
-
-        # Prepare result
-        result = {
-            "student_email": student_email,
-            "score": max(0, 100 - (pitch_diff * 10 + timing_diff * 5)),  # basic scoring
-            "pitch_difference": round(pitch_diff, 2),
-            "timing_difference": round(timing_diff, 2)
+        return {
+            "timing_lag_samples": int(lag),
+            "pitch_difference": round(float(pitch_diff), 2)
         }
-
-        # Callback to Zapier
-        response = requests.post(callback_url, json=result)
-        print(f"Sent results to Zapier. Status: {response.status_code}")
     except Exception as e:
-        print(f"Processing failed: {e}")
+        return {"error": str(e)}
 
-@app.route("/submit", methods=["POST"])
-def submit():
-    data = request.get_json()
-    threading.Thread(target=process_student_submission, args=(data,)).start()
-    return jsonify({"status": "received", "message": "Evaluation started."}), 200
+@app.route('/process', methods=['POST'])
+def process_audio():
+    try:
+        data = request.json
+        student_url = data.get('student_url')
+        professor_url = data.get('professor_url')
 
-@app.route("/", methods=["GET"])
-def home():
-    return "AI Quartet Evaluator is running.", 200
+        if not student_url or not professor_url:
+            return jsonify({"error": "Missing URLs"}), 400
 
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+        with tempfile.TemporaryDirectory() as tmpdirname:
+            student_path = os.path.join(tmpdirname, "student.mp3")
+            professor_path = os.path.join(tmpdirname, "professor.mp3")
+
+            if not download_file(student_url, student_path):
+                return jsonify({"error": "Failed to download student file"}), 400
+            if not download_file(professor_url, professor_path):
+                return jsonify({"error": "Failed to download professor file"}), 400
+
+            result = compare_audio(student_path, professor_path)
+            return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
