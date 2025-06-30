@@ -17,7 +17,7 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Replace with your actual folder ID
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
 
 # Authenticate Google Drive service using service account from env variable
 def get_drive_service():
@@ -58,6 +58,7 @@ def compare_audio(student_path, professor_path):
 
 def upload_to_drive(file_path, filename):
     try:
+        print(f"🚀 Uploading to Google Drive: {file_path}")
         service = get_drive_service()
         file_metadata = {
             'name': filename,
@@ -67,9 +68,11 @@ def upload_to_drive(file_path, filename):
         file = service.files().create(
             body=file_metadata, media_body=media, fields='id'
         ).execute()
-        return f"https://drive.google.com/uc?id={file.get('id')}"
+        drive_url = f"https://drive.google.com/uc?id={file.get('id')}"
+        print(f"✅ Upload successful: {drive_url}")
+        return drive_url
     except Exception as e:
-        print(f"Drive upload error: {e}")
+        print(f"❌ Drive upload error: {e}")
         return None
 
 def process_and_callback(data):
@@ -103,7 +106,7 @@ def process_and_callback(data):
             "student_email": email,
             "pitch_difference": float(round(pitch_diff, 2)),
             "timing_difference": float(round(timing_diff, 2)),
-            "feedback_url": drive_url
+            "feedback_url": drive_url or "Upload failed"
         }
         requests.post(callback_url, json=result)
 
@@ -134,5 +137,6 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
 
