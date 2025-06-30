@@ -5,30 +5,21 @@ import librosa
 import numpy as np
 import soundfile as sf
 import os
-import json
-from datetime import datetime
-from oauth2client.service_account import ServiceAccountCredentials
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Google Drive setup using environment variable
-credentials_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-if not credentials_json:
-    raise Exception("GOOGLE_SERVICE_ACCOUNT_JSON environment variable not set")
-
-creds_dict = json.loads(credentials_json)
+# Google Drive setup
 gauth = GoogleAuth()
-gauth.credentials = ServiceAccountCredentials.from_json_keyfile_dict(
-    creds_dict, ["https://www.googleapis.com/auth/drive"]
-)
+gauth.LoadCredentialsFile("service_account.json")
 drive = GoogleDrive(gauth)
 
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Change if needed
 
 def download_file(url, filename):
     try:
@@ -45,14 +36,17 @@ def compare_audio(student_path, professor_path):
     y_student, sr_student = librosa.load(student_path)
     y_professor, sr_professor = librosa.load(professor_path)
 
+    # Match length
     min_len = min(len(y_student), len(y_professor))
     y_student = y_student[:min_len]
     y_professor = y_professor[:min_len]
 
+    # Pitch difference
     chroma_student = librosa.feature.chroma_stft(y=y_student, sr=sr_student)
     chroma_professor = librosa.feature.chroma_stft(y=y_professor, sr=sr_professor)
     pitch_diff = np.mean(np.abs(chroma_student - chroma_professor))
 
+    # Timing difference
     rms_student = librosa.feature.rms(y=y_student)[0]
     rms_professor = librosa.feature.rms(y=y_professor)[0]
     rms_diff = np.mean(np.abs(rms_student - rms_professor))
@@ -74,14 +68,17 @@ def upload_to_drive(file_path):
 
 def process_and_callback(data):
     try:
-        student_url = data["student_url"]
-        professor_url = data["professor_url"]
+        student_url = data["student_url"].strip()
+        professor_url = data["professor_url"].strip()
         email = data["student_email"]
-        callback_url = data["callback_url"]
+        callback_url = data["callback_url"].strip()
 
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         student_path = f"{UPLOAD_FOLDER}/student_{timestamp}.mp3"
         professor_path = f"{UPLOAD_FOLDER}/professor_{timestamp}.mp3"
+
+        print(f"Downloading student file from {student_url}")
+        print(f"Downloading professor file from {professor_url}")
 
         if not download_file(student_url, student_path) or not download_file(professor_url, professor_path):
             requests.post(callback_url, json={"error": "File download failed", "student_email": email})
@@ -102,8 +99,11 @@ def process_and_callback(data):
             "timing_difference": round(timing_diff, 2),
             "feedback_url": drive_url
         }
+
+        print(f"Sending result to callback URL: {callback_url}")
         requests.post(callback_url, json=result)
 
+        # Cleanup
         for f in [student_path, professor_path, feedback_path]:
             if os.path.exists(f):
                 os.remove(f)
@@ -111,7 +111,10 @@ def process_and_callback(data):
     except Exception as e:
         print(f"Processing error: {e}")
         if "callback_url" in data:
-            requests.post(data["callback_url"], json={"error": str(e), "student_email": data.get("student_email")})
+            try:
+                requests.post(data["callback_url"], json={"error": str(e), "student_email": data.get("student_email")})
+            except:
+                print("Callback failed.")
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -121,6 +124,10 @@ def webhook():
 
     threading.Thread(target=process_and_callback, args=(data,)).start()
     return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({"message": "AI Quartet Evaluator is live."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
