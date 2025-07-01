@@ -16,25 +16,19 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# Replace this with your actual folder ID
 STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
 
-# Authenticate Google Drive service using environment variable
 def get_drive_service():
     try:
-        sa_raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-        if not sa_raw:
-            print("[ERROR] GOOGLE_SERVICE_ACCOUNT_JSON is empty or missing!")
-            return None
-
-        sa_info = json.loads(sa_raw)
-        print("[INFO] Successfully loaded GOOGLE_SERVICE_ACCOUNT_JSON")
-
+        sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
         credentials = service_account.Credentials.from_service_account_info(
-            sa_info, scopes=["https://www.googleapis.com/auth/drive"]
+            sa_info,
+            scopes=["https://www.googleapis.com/auth/drive"]
         )
         return build("drive", "v3", credentials=credentials)
     except Exception as e:
-        print(f"[ERROR] Failed to parse GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+        print(f"Service account auth error: {e}")
         return None
 
 def download_file(url, filename):
@@ -43,10 +37,9 @@ def download_file(url, filename):
         r.raise_for_status()
         with open(filename, "wb") as f:
             f.write(r.content)
-        print(f"[INFO] Downloaded: {filename}")
         return True
     except Exception as e:
-        print(f"[ERROR] Download failed for {url}: {e}")
+        print(f"Download error: {e}")
         return False
 
 def compare_audio(student_path, professor_path):
@@ -58,5 +51,72 @@ def compare_audio(student_path, professor_path):
     y_professor = y_professor[:min_len]
 
     chroma_student = librosa.feature.chroma_stft(y=y_student, sr=sr_student)
-    chroma
+    chroma_professor = librosa.feature.chroma_stft(y=y_professor, sr=sr_professor)
+    pitch_diff = np.mean(np.abs(chroma_student - chroma_professor))
+
+    rms_student = librosa.feature.rms(y=y_student)[0]
+    rms_professor = librosa.feature.rms(y=y_professor)[0]
+    rms_diff = np.mean(np.abs(rms_student - rms_professor))
+
+    return pitch_diff, rms_diff, rms_student, rms_professor
+
+def generate_graph(rms_student, rms_professor, timestamp):
+    try:
+        plt.figure(figsize=(10, 4))
+        plt.plot(rms_student, label='Student')
+        plt.plot(rms_professor, label='Professor')
+        plt.legend()
+        plt.title("RMS Energy Comparison")
+        plt.xlabel("Frame")
+        plt.ylabel("RMS Energy")
+        graph_path = f"{UPLOAD_FOLDER}/graph_{timestamp}.png"
+        plt.savefig(graph_path)
+        plt.close()
+        return graph_path
+    except Exception as e:
+        print(f"Graph generation error: {e}")
+        return None
+
+def upload_to_drive(file_path, filename):
+    try:
+        service = get_drive_service()
+        if service is None:
+            return None
+
+        file_metadata = {
+            'name': filename,
+            'parents': [STUDENT_EVAL_FOLDER_ID]
+        }
+        media = MediaFileUpload(file_path, resumable=True)
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
+        ).execute()
+        return f"https://drive.google.com/uc?id={file.get('id')}"
+    except Exception as e:
+        print(f"Drive upload error: {e}")
+        return None
+
+def process_and_callback(data):
+    try:
+        student_url = data["student_url"].strip()
+        professor_url = data["professor_url"].strip()
+        email = data["student_email"]
+        callback_url = data["callback_url"]
+
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        student_path = f"{UPLOAD_FOLDER}/student_{timestamp}.mp3"
+        professor_path = f"{UPLOAD_FOLDER}/professor_{timestamp}.mp3"
+
+        if not download_file(student_url, student_path) or not download_file(professor_url, professor_path):
+            requests.post(callback_url, json={"error": "File download failed", "student_email": email})
+            return
+
+        pitch_diff, timing_diff, rms_student, rms_professor = compare_audio(student_path, professor_path)
+
+        result_txt = (
+            f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
+            f"Timing Differ
+
 
