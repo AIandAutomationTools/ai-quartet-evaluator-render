@@ -5,7 +5,9 @@ import librosa
 import numpy as np
 import soundfile as sf
 import os
+import io
 import json
+import matplotlib.pyplot as plt
 from datetime import datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -16,65 +18,69 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Replace this with your actual shared folder ID
-STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Replace with your real folder ID
 
-# --- Google Drive service using environment variable ---
+# Authenticate Google Drive service
 def get_drive_service():
-    try:
-        sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
-        credentials = service_account.Credentials.from_service_account_info(
-            sa_info, scopes=["https://www.googleapis.com/auth/drive"]
-        )
-        return build("drive", "v3", credentials=credentials)
-    except Exception as e:
-        print(f"❌ Google Drive auth failed: {e}")
-        return None
+    sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    credentials = service_account.Credentials.from_service_account_info(
+        sa_info, scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("drive", "v3", credentials=credentials)
 
-# --- Download file from public URL ---
+# Download file from a URL
 def download_file(url, filename):
     try:
         r = requests.get(url.strip())
         r.raise_for_status()
         with open(filename, "wb") as f:
             f.write(r.content)
-        print(f"✅ Downloaded: {filename}")
         return True
     except Exception as e:
-        print(f"❌ Download error: {e}")
+        print(f"Download error: {e}")
         return False
 
-# --- Compare two audio files ---
+# Compare pitch and timing between two audio files
 def compare_audio(student_path, professor_path):
+    y_student, sr_student = librosa.load(student_path)
+    y_professor, sr_professor = librosa.load(professor_path)
+
+    min_len = min(len(y_student), len(y_professor))
+    y_student = y_student[:min_len]
+    y_professor = y_professor[:min_len]
+
+    chroma_student = librosa.feature.chroma_stft(y=y_student, sr=sr_student)
+    chroma_professor = librosa.feature.chroma_stft(y=y_professor, sr=sr_professor)
+    pitch_diff = np.mean(np.abs(chroma_student - chroma_professor))
+
+    rms_student = librosa.feature.rms(y=y_student)[0]
+    rms_professor = librosa.feature.rms(y=y_professor)[0]
+    rms_diff = np.mean(np.abs(rms_student - rms_professor))
+
+    return pitch_diff, rms_diff
+
+# Generate chart and save as image
+def generate_chart(pitch_diff, timing_diff, filepath):
     try:
-        y_student, sr_student = librosa.load(student_path)
-        y_professor, sr_professor = librosa.load(professor_path)
-
-        min_len = min(len(y_student), len(y_professor))
-        y_student = y_student[:min_len]
-        y_professor = y_professor[:min_len]
-
-        chroma_student = librosa.feature.chroma_stft(y=y_student, sr=sr_student)
-        chroma_professor = librosa.feature.chroma_stft(y=y_professor, sr=sr_professor)
-        pitch_diff = np.mean(np.abs(chroma_student - chroma_professor))
-
-        rms_student = librosa.feature.rms(y=y_student)[0]
-        rms_professor = librosa.feature.rms(y=y_professor)[0]
-        rms_diff = np.mean(np.abs(rms_student - rms_professor))
-
-        return pitch_diff, rms_diff
+        plt.figure(figsize=(6, 4))
+        categories = ['Pitch', 'Timing']
+        values = [pitch_diff, timing_diff]
+        plt.bar(categories, values, color=['skyblue', 'salmon'])
+        plt.title('Pitch & Timing Difference')
+        plt.ylabel('Difference Score')
+        plt.ylim(0, max(values) + 0.2)
+        plt.tight_layout()
+        plt.savefig(filepath)
+        plt.close()
+        return True
     except Exception as e:
-        print(f"❌ Audio comparison error: {e}")
-        raise
+        print(f"Chart generation failed: {e}")
+        return False
 
-# --- Upload feedback to Google Drive ---
+# Upload file to Google Drive
 def upload_to_drive(file_path, filename):
     try:
-        print(f"🚀 Uploading to Google Drive: {file_path}")
         service = get_drive_service()
-        if not service:
-            raise Exception("Google Drive service unavailable")
-
         file_metadata = {
             'name': filename,
             'parents': [STUDENT_EVAL_FOLDER_ID]
@@ -83,15 +89,12 @@ def upload_to_drive(file_path, filename):
         file = service.files().create(
             body=file_metadata, media_body=media, fields='id'
         ).execute()
-
-        drive_url = f"https://drive.google.com/uc?id={file.get('id')}"
-        print(f"✅ Upload successful: {drive_url}")
-        return drive_url
+        return f"https://drive.google.com/uc?id={file.get('id')}"
     except Exception as e:
-        print(f"❌ Drive upload error: {e}")
+        print(f"Drive upload error: {e}")
         return None
 
-# --- Main processing thread ---
+# Main logic
 def process_and_callback(data):
     try:
         student_url = data["student_url"].strip()
@@ -109,47 +112,55 @@ def process_and_callback(data):
 
         pitch_diff, timing_diff = compare_audio(student_path, professor_path)
 
-        feedback = (
+        # Create feedback file
+        result_txt = (
             f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
             f"Timing Difference: {round(float(timing_diff), 2)}\n"
         )
         feedback_path = f"{UPLOAD_FOLDER}/feedback_{timestamp}.txt"
         with open(feedback_path, "w") as f:
-            f.write(feedback)
+            f.write(result_txt)
 
-        drive_url = upload_to_drive(feedback_path, os.path.basename(feedback_path))
+        # Upload feedback
+        feedback_url = upload_to_drive(feedback_path, os.path.basename(feedback_path))
 
+        # Generate and upload chart
+        chart_path = f"{UPLOAD_FOLDER}/chart_{timestamp}.png"
+        chart_created = generate_chart(pitch_diff, timing_diff, chart_path)
+        chart_url = upload_to_drive(chart_path, os.path.basename(chart_path)) if chart_created else None
+
+        # Callback to Zapier
         result = {
             "student_email": email,
             "pitch_difference": float(round(pitch_diff, 2)),
             "timing_difference": float(round(timing_diff, 2)),
-            "feedback_url": drive_url or "Upload failed"
+            "feedback_url": feedback_url,
+            "chart_url": chart_url
         }
         requests.post(callback_url, json=result)
 
-        for f in [student_path, professor_path, feedback_path]:
+        # Clean up files
+        for f in [student_path, professor_path, feedback_path, chart_path]:
             if os.path.exists(f):
                 os.remove(f)
 
     except Exception as e:
-        print(f"❌ Processing error: {e}")
+        print(f"Processing error: {e}")
         if "callback_url" in data:
             requests.post(data["callback_url"], json={
                 "error": str(e),
                 "student_email": data.get("student_email", "")
             })
 
-# --- Flask endpoints ---
 @app.route("/", methods=["GET"])
 def index():
-    return "🎶 AI Quartet Evaluator is running 🎶", 200
+    return "AI Quartet Evaluator is running", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing JSON data"}), 400
-
     threading.Thread(target=process_and_callback, args=(data,)).start()
     return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
 
