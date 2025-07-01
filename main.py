@@ -5,53 +5,48 @@ import librosa
 import numpy as np
 import soundfile as sf
 import os
-import io
 import json
+import matplotlib.pyplot as plt
 from datetime import datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 app = Flask(__name__)
+
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Google Drive folder ID where files will be uploaded
 STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
 
-# Load Google Drive service from environment variable
+# === Google Drive Setup ===
 def get_drive_service():
-    try:
-        sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
-        credentials = service_account.Credentials.from_service_account_info(
-            sa_info, scopes=["https://www.googleapis.com/auth/drive"]
-        )
-        return build("drive", "v3", credentials=credentials)
-    except Exception as e:
-        print(f"❌ Error loading Google credentials: {e}")
-        raise
+    sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    credentials = service_account.Credentials.from_service_account_info(
+        sa_info, scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("drive", "v3", credentials=credentials)
 
-# Upload a file to Google Drive
 def upload_to_drive(file_path, filename):
     try:
-        print(f"📤 Uploading {filename} to Drive...")
         service = get_drive_service()
         file_metadata = {
             'name': filename,
             'parents': [STUDENT_EVAL_FOLDER_ID]
         }
         media = MediaFileUpload(file_path, resumable=True)
-        file = service.files().create(
-            body=file_metadata, media_body=media, fields='id'
+        uploaded_file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
         ).execute()
-        file_id = file.get('id')
-        print(f"✅ Uploaded successfully. File ID: {file_id}")
+        file_id = uploaded_file.get("id")
         return f"https://drive.google.com/uc?id={file_id}"
     except Exception as e:
-        print(f"❌ Drive upload error for {filename}: {e}")
+        print(f"❌ Drive upload error: {e}")
         return None
 
-# Download file from URL
+# === Utility ===
 def download_file(url, filename):
     try:
         r = requests.get(url.strip())
@@ -63,7 +58,6 @@ def download_file(url, filename):
         print(f"❌ Download error: {e}")
         return False
 
-# Compare audio pitch and timing
 def compare_audio(student_path, professor_path):
     y_student, sr_student = librosa.load(student_path)
     y_professor, sr_professor = librosa.load(professor_path)
@@ -78,11 +72,27 @@ def compare_audio(student_path, professor_path):
 
     rms_student = librosa.feature.rms(y=y_student)[0]
     rms_professor = librosa.feature.rms(y=y_professor)[0]
-    rms_diff = np.mean(np.abs(rms_student - rms_professor))
+    timing_diff = np.mean(np.abs(rms_student - rms_professor))
 
-    return pitch_diff, rms_diff
+    return float(pitch_diff), float(timing_diff)
 
-# Main audio processing and callback
+def generate_chart(pitch_diff, timing_diff, timestamp):
+    try:
+        fig, ax = plt.subplots()
+        categories = ['Pitch Difference', 'Timing Difference']
+        values = [pitch_diff, timing_diff]
+        ax.bar(categories, values, color=['blue', 'orange'])
+        ax.set_ylabel("Difference")
+        ax.set_title("Performance Comparison")
+        chart_path = f"{UPLOAD_FOLDER}/chart_{timestamp}.png"
+        plt.savefig(chart_path)
+        plt.close()
+        return chart_path
+    except Exception as e:
+        print(f"❌ Chart generation error: {e}")
+        return None
+
+# === Core Workflow ===
 def process_and_callback(data):
     try:
         student_url = data["student_url"].strip()
@@ -100,30 +110,30 @@ def process_and_callback(data):
 
         pitch_diff, timing_diff = compare_audio(student_path, professor_path)
 
-        # Save feedback text file
         result_txt = (
-            f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
-            f"Timing Difference: {round(float(timing_diff), 2)}\n"
+            f"Pitch Difference: {round(pitch_diff, 2)}\n"
+            f"Timing Difference: {round(timing_diff, 2)}\n"
         )
         feedback_path = f"{UPLOAD_FOLDER}/feedback_{timestamp}.txt"
         with open(feedback_path, "w") as f:
             f.write(result_txt)
 
-        feedback_url = upload_to_drive(feedback_path, os.path.basename(feedback_path))
+        drive_url = upload_to_drive(feedback_path, os.path.basename(feedback_path))
 
-        # Build response
+        chart_path = generate_chart(pitch_diff, timing_diff, timestamp)
+        chart_url = upload_to_drive(chart_path, os.path.basename(chart_path)) if chart_path else None
+
         result = {
             "student_email": email,
-            "pitch_difference": round(float(pitch_diff), 2),
-            "timing_difference": round(float(timing_diff), 2),
-            "feedback_url": feedback_url or "Upload failed."
+            "pitch_difference": round(pitch_diff, 2),
+            "timing_difference": round(timing_diff, 2),
+            "feedback_url": drive_url or "Upload failed.",
+            "graph_url": chart_url or "Upload failed."
         }
-
-        print("✅ Returning result to Zapier:", result)
         requests.post(callback_url, json=result)
 
-        for f in [student_path, professor_path, feedback_path]:
-            if os.path.exists(f):
+        for f in [student_path, professor_path, feedback_path, chart_path]:
+            if f and os.path.exists(f):
                 os.remove(f)
 
     except Exception as e:
@@ -134,36 +144,49 @@ def process_and_callback(data):
                 "student_email": data.get("student_email", "")
             })
 
-# Home route
+# === Routes ===
 @app.route("/", methods=["GET"])
 def index():
-    return "🎵 AI Quartet Evaluator is running", 200
+    return "✅ AI Quartet Evaluator is running.", 200
 
-# Webhook route
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing JSON data"}), 400
-
     threading.Thread(target=process_and_callback, args=(data,)).start()
     return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
 
-# Manual test upload endpoint
 @app.route("/test-upload", methods=["GET"])
 def test_upload():
     try:
-        dummy_path = f"{UPLOAD_FOLDER}/test_upload.txt"
-        with open(dummy_path, "w") as f:
-            f.write("Test upload to Google Drive")
+        test_content = "This is a test upload from the AI Quartet Evaluator service."
+        test_path = os.path.join(UPLOAD_FOLDER, "test_upload.txt")
+        with open(test_path, "w") as f:
+            f.write(test_content)
 
-        url = upload_to_drive(dummy_path, "test_upload.txt")
-        os.remove(dummy_path)
-        return jsonify({"test_upload_url": url}), 200
+        service = get_drive_service()
+        file_metadata = {
+            "name": "test_upload.txt",
+            "parents": [STUDENT_EVAL_FOLDER_ID],
+        }
+        media = MediaFileUpload(test_path, resumable=True)
+        uploaded_file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id"
+        ).execute()
+
+        file_id = uploaded_file.get("id")
+        file_url = f"https://drive.google.com/uc?id={file_id}"
+        print(f"✅ Test file uploaded successfully: {file_url}")
+        return jsonify({"test_upload_url": file_url})
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"❌ Drive upload test failed: {e}")
+        return jsonify({"test_upload_url": None, "error": str(e)}), 500
 
-# Run app on Render
+# === Entry Point ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
 
