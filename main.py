@@ -16,7 +16,6 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Replace this with your actual folder ID
 STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
 
 def get_drive_service():
@@ -117,6 +116,23 @@ def process_and_callback(data):
 
         result_txt = (
             f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
-            f"Timing Differ
+            f"Timing Difference: {round(float(timing_diff), 2)}\n"
+        )
+        feedback_path = f"{UPLOAD_FOLDER}/feedback_{timestamp}.txt"
+        with open(feedback_path, "w") as f:
+            f.write(result_txt)
+
+        feedback_url = upload_to_drive(feedback_path, os.path.basename(feedback_path))
+        graph_path = generate_graph(rms_student, rms_professor, timestamp)
+        graph_url = upload_to_drive(graph_path, os.path.basename(graph_path)) if graph_path else "Upload failed"
+
+        result = {
+            "student_email": email,
+            "pitch_difference": float(round(pitch_diff, 2)),
+            "timing_difference": float(round(timing_diff, 2)),
+            "feedback_url": feedback_url,
+            "graph_url": graph_url
+        }
+        print("Result sent to callback:", result)
 
 
