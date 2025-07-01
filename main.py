@@ -3,9 +3,7 @@ import threading
 import requests
 import librosa
 import numpy as np
-import soundfile as sf
 import os
-import io
 import json
 import matplotlib.pyplot as plt
 from google.oauth2 import service_account
@@ -14,13 +12,11 @@ from googleapiclient.http import MediaFileUpload
 from datetime import datetime
 
 app = Flask(__name__)
-
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Replace with your actual folder ID
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
 
-# Authenticate with Google Drive
 def get_drive_service():
     sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
     credentials = service_account.Credentials.from_service_account_info(
@@ -28,32 +24,37 @@ def get_drive_service():
     )
     return build("drive", "v3", credentials=credentials)
 
-# Upload file to Google Drive
 def upload_to_drive(file_path, filename):
     try:
         service = get_drive_service()
         file_metadata = {'name': filename, 'parents': [STUDENT_EVAL_FOLDER_ID]}
         media = MediaFileUpload(file_path, resumable=True)
-        uploaded_file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        file_id = uploaded_file.get('id')
-        return f"https://drive.google.com/uc?id={file_id}"
+        file = service.files().create(
+            body=file_metadata, media_body=media, fields='id'
+        ).execute()
+        file_id = file.get('id')
+        if file_id:
+            print(f"✅ Uploaded {filename} to Drive with ID: {file_id}")
+            return f"https://drive.google.com/uc?id={file_id}"
+        else:
+            print("⚠️ Upload failed: No file ID returned.")
+            return None
     except Exception as e:
-        print(f"Drive upload error: {e}")
+        print(f"❌ Drive upload error: {e}")
         return None
 
-# Download MP3 file
 def download_file(url, filename):
     try:
         r = requests.get(url.strip())
         r.raise_for_status()
         with open(filename, "wb") as f:
             f.write(r.content)
+        print(f"✅ Downloaded {filename}")
         return True
     except Exception as e:
-        print(f"Download error: {e}")
+        print(f"❌ Download error: {e}")
         return False
 
-# Generate comparison metrics
 def compare_audio(student_path, professor_path):
     y_student, sr_student = librosa.load(student_path)
     y_professor, sr_professor = librosa.load(professor_path)
@@ -70,22 +71,24 @@ def compare_audio(student_path, professor_path):
     rms_professor = librosa.feature.rms(y=y_professor)[0]
     rms_diff = np.mean(np.abs(rms_student - rms_professor))
 
-    return pitch_diff, rms_diff, rms_student, rms_professor
+    return pitch_diff, timing_diff, rms_student, rms_professor
 
-# Generate and save chart
 def create_comparison_plot(rms_student, rms_professor, filename):
-    plt.figure(figsize=(10, 4))
-    plt.plot(rms_student, label='Student', alpha=0.7)
-    plt.plot(rms_professor, label='Professor', alpha=0.7)
-    plt.title('Timing Comparison (RMS Energy)')
-    plt.xlabel('Frame')
-    plt.ylabel('RMS')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(filename)
-    plt.close()
+    try:
+        plt.figure(figsize=(10, 4))
+        plt.plot(rms_student, label='Student', alpha=0.7)
+        plt.plot(rms_professor, label='Professor', alpha=0.7)
+        plt.title('Timing Comparison (RMS Energy)')
+        plt.xlabel('Frame')
+        plt.ylabel('RMS')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(filename)
+        plt.close()
+        print(f"✅ Graph saved as {filename}")
+    except Exception as e:
+        print(f"❌ Graph generation error: {e}")
 
-# Process and send callback
 def process_and_callback(data):
     try:
         student_url = data["student_url"].strip()
@@ -103,16 +106,16 @@ def process_and_callback(data):
 
         pitch_diff, timing_diff, rms_student, rms_professor = compare_audio(student_path, professor_path)
 
-        # Create feedback file
-        result_txt = (
+        # Text Feedback
+        feedback_text = (
             f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
             f"Timing Difference: {round(float(timing_diff), 2)}\n"
         )
         feedback_path = f"{UPLOAD_FOLDER}/feedback_{timestamp}.txt"
         with open(feedback_path, "w") as f:
-            f.write(result_txt)
+            f.write(feedback_text)
 
-        # Generate and upload graph
+        # Graph
         graph_path = f"{UPLOAD_FOLDER}/graph_{timestamp}.png"
         create_comparison_plot(rms_student, rms_professor, graph_path)
 
@@ -127,6 +130,7 @@ def process_and_callback(data):
             "graph_url": graph_url
         }
 
+        print(f"📤 Sending result to callback: {result}")
         requests.post(callback_url, json=result)
 
         for f in [student_path, professor_path, feedback_path, graph_path]:
@@ -134,7 +138,7 @@ def process_and_callback(data):
                 os.remove(f)
 
     except Exception as e:
-        print(f"Processing error: {e}")
+        print(f"❌ Processing error: {e}")
         if "callback_url" in data:
             requests.post(data["callback_url"], json={
                 "error": str(e),
