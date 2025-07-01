@@ -3,19 +3,22 @@ import threading
 import requests
 import librosa
 import numpy as np
-import os
-import json
+import soundfile as sf
 import matplotlib.pyplot as plt
+import os
+import io
+import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from datetime import datetime
 
 app = Flask(__name__)
+
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Google Drive folder ID
 
 def get_drive_service():
     sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
@@ -24,32 +27,12 @@ def get_drive_service():
     )
     return build("drive", "v3", credentials=credentials)
 
-def upload_to_drive(file_path, filename):
-    try:
-        service = get_drive_service()
-        file_metadata = {'name': filename, 'parents': [STUDENT_EVAL_FOLDER_ID]}
-        media = MediaFileUpload(file_path, resumable=True)
-        file = service.files().create(
-            body=file_metadata, media_body=media, fields='id'
-        ).execute()
-        file_id = file.get('id')
-        if file_id:
-            print(f"✅ Uploaded {filename} to Drive with ID: {file_id}")
-            return f"https://drive.google.com/uc?id={file_id}"
-        else:
-            print("⚠️ Upload failed: No file ID returned.")
-            return None
-    except Exception as e:
-        print(f"❌ Drive upload error: {e}")
-        return None
-
 def download_file(url, filename):
     try:
         r = requests.get(url.strip())
         r.raise_for_status()
         with open(filename, "wb") as f:
             f.write(r.content)
-        print(f"✅ Downloaded {filename}")
         return True
     except Exception as e:
         print(f"❌ Download error: {e}")
@@ -71,23 +54,42 @@ def compare_audio(student_path, professor_path):
     rms_professor = librosa.feature.rms(y=y_professor)[0]
     rms_diff = np.mean(np.abs(rms_student - rms_professor))
 
-    return pitch_diff, timing_diff, rms_student, rms_professor
+    return pitch_diff, rms_diff, rms_student, rms_professor
 
-def create_comparison_plot(rms_student, rms_professor, filename):
+def save_graph(rms_student, rms_professor, filename):
     try:
         plt.figure(figsize=(10, 4))
-        plt.plot(rms_student, label='Student', alpha=0.7)
-        plt.plot(rms_professor, label='Professor', alpha=0.7)
-        plt.title('Timing Comparison (RMS Energy)')
-        plt.xlabel('Frame')
-        plt.ylabel('RMS')
+        plt.plot(rms_student, label="Student RMS")
+        plt.plot(rms_professor, label="Professor RMS")
+        plt.title("RMS Energy Comparison")
+        plt.xlabel("Frames")
+        plt.ylabel("Energy")
         plt.legend()
         plt.tight_layout()
         plt.savefig(filename)
         plt.close()
-        print(f"✅ Graph saved as {filename}")
+        return True
     except Exception as e:
-        print(f"❌ Graph generation error: {e}")
+        print(f"❌ Graph save error: {e}")
+        return False
+
+def upload_to_drive(file_path, filename):
+    try:
+        service = get_drive_service()
+        file_metadata = {
+            'name': filename,
+            'parents': [STUDENT_EVAL_FOLDER_ID]
+        }
+        media = MediaFileUpload(file_path, resumable=True)
+        file = service.files().create(
+            body=file_metadata, media_body=media, fields='id'
+        ).execute()
+        file_id = file.get('id')
+        print(f"✅ Uploaded {filename} to Google Drive: {file_id}")
+        return f"https://drive.google.com/uc?id={file_id}"
+    except Exception as e:
+        print(f"❌ Drive upload error: {e}")
+        return None
 
 def process_and_callback(data):
     try:
@@ -101,41 +103,49 @@ def process_and_callback(data):
         professor_path = f"{UPLOAD_FOLDER}/professor_{timestamp}.mp3"
 
         if not download_file(student_url, student_path) or not download_file(professor_url, professor_path):
+            print("❌ File download failed")
             requests.post(callback_url, json={"error": "File download failed", "student_email": email})
             return
 
         pitch_diff, timing_diff, rms_student, rms_professor = compare_audio(student_path, professor_path)
 
-        # Text Feedback
-        feedback_text = (
+        # Save feedback
+        result_txt = (
             f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
             f"Timing Difference: {round(float(timing_diff), 2)}\n"
         )
         feedback_path = f"{UPLOAD_FOLDER}/feedback_{timestamp}.txt"
         with open(feedback_path, "w") as f:
-            f.write(feedback_text)
+            f.write(result_txt)
 
-        # Graph
+        # Save chart
         graph_path = f"{UPLOAD_FOLDER}/graph_{timestamp}.png"
-        create_comparison_plot(rms_student, rms_professor, graph_path)
+        save_graph(rms_student, rms_professor, graph_path)
 
+        # Upload both files
         feedback_url = upload_to_drive(feedback_path, os.path.basename(feedback_path))
         graph_url = upload_to_drive(graph_path, os.path.basename(graph_path))
 
         result = {
             "student_email": email,
-            "pitch_difference": float(round(pitch_diff, 2)),
-            "timing_difference": float(round(timing_diff, 2)),
+            "pitch_difference": round(float(pitch_diff), 2),
+            "timing_difference": round(float(timing_diff), 2),
             "feedback_url": feedback_url,
             "graph_url": graph_url
         }
 
-        print(f"📤 Sending result to callback: {result}")
-        requests.post(callback_url, json=result)
+        try:
+            print(f"📤 Sending result to callback URL: {callback_url}")
+            response = requests.post(callback_url, json=result)
+            print(f"✅ Callback status: {response.status_code}")
+            print(f"✅ Callback body: {response.text}")
+        except Exception as cb_err:
+            print(f"❌ Callback error: {cb_err}")
 
-        for f in [student_path, professor_path, feedback_path, graph_path]:
-            if os.path.exists(f):
-                os.remove(f)
+        # TEMP: Disable cleanup while debugging
+        # for f in [student_path, professor_path, feedback_path, graph_path]:
+        #     if os.path.exists(f):
+        #         os.remove(f)
 
     except Exception as e:
         print(f"❌ Processing error: {e}")
@@ -147,18 +157,18 @@ def process_and_callback(data):
 
 @app.route("/", methods=["GET"])
 def index():
-    return "AI Quartet Evaluator is running", 200
+    return "✅ AI Quartet Evaluator is running", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing JSON data"}), 400
-
     threading.Thread(target=process_and_callback, args=(data,)).start()
     return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
 
