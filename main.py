@@ -3,9 +3,7 @@ import threading
 import requests
 import librosa
 import numpy as np
-import soundfile as sf
 import os
-import io
 import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -17,9 +15,8 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Replace with your folder ID
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
 
-# Authenticate Google Drive service using service account from env variable
 def get_drive_service():
     sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
     credentials = service_account.Credentials.from_service_account_info(
@@ -33,30 +30,33 @@ def download_file(url, filename):
         r.raise_for_status()
         with open(filename, "wb") as f:
             f.write(r.content)
-        file_size = os.path.getsize(filename)
-        print(f"Downloaded {filename} - Size: {file_size} bytes")
+        print(f"Downloaded {filename} ({os.path.getsize(filename)} bytes)")
         return True
     except Exception as e:
         print(f"Download error: {e}")
         return False
 
 def compare_audio(student_path, professor_path):
-    y_student, sr_student = librosa.load(student_path)
-    y_professor, sr_professor = librosa.load(professor_path)
+    try:
+        y_student, sr_student = librosa.load(student_path)
+        y_professor, sr_professor = librosa.load(professor_path)
 
-    min_len = min(len(y_student), len(y_professor))
-    y_student = y_student[:min_len]
-    y_professor = y_professor[:min_len]
+        min_len = min(len(y_student), len(y_professor))
+        y_student = y_student[:min_len]
+        y_professor = y_professor[:min_len]
 
-    chroma_student = librosa.feature.chroma_stft(y=y_student, sr=sr_student)
-    chroma_professor = librosa.feature.chroma_stft(y=y_professor, sr=sr_professor)
-    pitch_diff = np.mean(np.abs(chroma_student - chroma_professor))
+        chroma_student = librosa.feature.chroma_stft(y=y_student, sr=sr_student)
+        chroma_professor = librosa.feature.chroma_stft(y=y_professor, sr=sr_professor)
+        pitch_diff = np.mean(np.abs(chroma_student - chroma_professor))
 
-    rms_student = librosa.feature.rms(y=y_student)[0]
-    rms_professor = librosa.feature.rms(y=y_professor)[0]
-    rms_diff = np.mean(np.abs(rms_student - rms_professor))
+        rms_student = librosa.feature.rms(y=y_student)[0]
+        rms_professor = librosa.feature.rms(y=y_professor)[0]
+        rms_diff = np.mean(np.abs(rms_student - rms_professor))
 
-    return pitch_diff, rms_diff
+        return pitch_diff, rms_diff
+    except Exception as e:
+        print(f"Audio comparison error: {e}")
+        raise
 
 def upload_to_drive(file_path, filename):
     try:
@@ -70,8 +70,7 @@ def upload_to_drive(file_path, filename):
             body=file_metadata, media_body=media, fields='id'
         ).execute()
         file_id = file.get('id')
-        if file_id:
-            print(f"File uploaded to Drive with ID: {file_id}")
+        print(f"Uploaded to Drive with ID: {file_id}")
         return f"https://drive.google.com/uc?id={file_id}"
     except Exception as e:
         print(f"Drive upload error: {e}")
@@ -92,7 +91,11 @@ def process_and_callback(data):
             requests.post(callback_url, json={"error": "File download failed", "student_email": email})
             return
 
-        pitch_diff, timing_diff = compare_audio(student_path, professor_path)
+        try:
+            pitch_diff, timing_diff = compare_audio(student_path, professor_path)
+        except Exception as e:
+            requests.post(callback_url, json={"error": "Audio comparison failed", "details": str(e), "student_email": email})
+            return
 
         result_txt = (
             f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
@@ -102,13 +105,13 @@ def process_and_callback(data):
         with open(feedback_path, "w") as f:
             f.write(result_txt)
 
-        drive_url = upload_to_drive(feedback_path, os.path.basename(feedback_path))
+        drive_url = upload_to_drive(feedback_path, os.path.basename(feedback_path)) or "Drive upload failed"
 
         result = {
             "student_email": email,
             "pitch_difference": float(round(pitch_diff, 2)),
             "timing_difference": float(round(timing_diff, 2)),
-            "feedback_url": drive_url or "Upload failed"
+            "feedback_url": drive_url
         }
         requests.post(callback_url, json=result)
 
@@ -139,4 +142,3 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
