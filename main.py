@@ -4,10 +4,10 @@ import requests
 import librosa
 import numpy as np
 import soundfile as sf
-import matplotlib.pyplot as plt
 import os
 import io
 import json
+import matplotlib.pyplot as plt
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -18,8 +18,9 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"  # Google Drive folder ID
+STUDENT_EVAL_FOLDER_ID = "1TX5Z_wwQIvQKEqFFygd43SSQxYQZrD6k"
 
+# Authenticate using service account JSON from environment variable
 def get_drive_service():
     sa_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
     credentials = service_account.Credentials.from_service_account_info(
@@ -27,6 +28,33 @@ def get_drive_service():
     )
     return build("drive", "v3", credentials=credentials)
 
+# Upload file to Google Drive and return shareable URL
+def upload_to_drive(file_path, filename):
+    try:
+        service = get_drive_service()
+        file_metadata = {
+            'name': filename,
+            'parents': [STUDENT_EVAL_FOLDER_ID]
+        }
+        media = MediaFileUpload(file_path, resumable=True)
+        file = service.files().create(
+            body=file_metadata, media_body=media, fields='id'
+        ).execute()
+
+        file_id = file.get("id")
+        if file_id:
+            # Set permissions to anyone with the link
+            service.permissions().create(
+                fileId=file_id,
+                body={"type": "anyone", "role": "reader"},
+            ).execute()
+            return f"https://drive.google.com/uc?id={file_id}"
+        return None
+    except Exception as e:
+        print(f"Drive upload error: {e}")
+        return None
+
+# Download file from URL
 def download_file(url, filename):
     try:
         r = requests.get(url.strip())
@@ -35,9 +63,10 @@ def download_file(url, filename):
             f.write(r.content)
         return True
     except Exception as e:
-        print(f"❌ Download error: {e}")
+        print(f"Download error: {e}")
         return False
 
+# Compare two audio files for pitch and timing
 def compare_audio(student_path, professor_path):
     y_student, sr_student = librosa.load(student_path)
     y_professor, sr_professor = librosa.load(professor_path)
@@ -56,41 +85,27 @@ def compare_audio(student_path, professor_path):
 
     return pitch_diff, rms_diff, rms_student, rms_professor
 
-def save_graph(rms_student, rms_professor, filename):
+# Generate and upload a graph comparing RMS (timing)
+def generate_and_upload_chart(rms_student, rms_professor, timestamp):
     try:
         plt.figure(figsize=(10, 4))
-        plt.plot(rms_student, label="Student RMS")
-        plt.plot(rms_professor, label="Professor RMS")
-        plt.title("RMS Energy Comparison")
-        plt.xlabel("Frames")
-        plt.ylabel("Energy")
+        plt.plot(rms_student, label="Student RMS", alpha=0.7)
+        plt.plot(rms_professor, label="Professor RMS", alpha=0.7)
         plt.legend()
-        plt.tight_layout()
-        plt.savefig(filename)
-        plt.close()
-        return True
-    except Exception as e:
-        print(f"❌ Graph save error: {e}")
-        return False
+        plt.title("RMS Comparison (Timing)")
+        plt.xlabel("Frame")
+        plt.ylabel("Energy")
 
-def upload_to_drive(file_path, filename):
-    try:
-        service = get_drive_service()
-        file_metadata = {
-            'name': filename,
-            'parents': [STUDENT_EVAL_FOLDER_ID]
-        }
-        media = MediaFileUpload(file_path, resumable=True)
-        file = service.files().create(
-            body=file_metadata, media_body=media, fields='id'
-        ).execute()
-        file_id = file.get('id')
-        print(f"✅ Uploaded {filename} to Google Drive: {file_id}")
-        return f"https://drive.google.com/uc?id={file_id}"
+        chart_path = f"{UPLOAD_FOLDER}/rms_chart_{timestamp}.png"
+        plt.savefig(chart_path)
+        plt.close()
+
+        return upload_to_drive(chart_path, os.path.basename(chart_path))
     except Exception as e:
-        print(f"❌ Drive upload error: {e}")
+        print(f"Chart generation/upload error: {e}")
         return None
 
+# Main processing function
 def process_and_callback(data):
     try:
         student_url = data["student_url"].strip()
@@ -103,13 +118,11 @@ def process_and_callback(data):
         professor_path = f"{UPLOAD_FOLDER}/professor_{timestamp}.mp3"
 
         if not download_file(student_url, student_path) or not download_file(professor_url, professor_path):
-            print("❌ File download failed")
             requests.post(callback_url, json={"error": "File download failed", "student_email": email})
             return
 
         pitch_diff, timing_diff, rms_student, rms_professor = compare_audio(student_path, professor_path)
 
-        # Save feedback
         result_txt = (
             f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
             f"Timing Difference: {round(float(timing_diff), 2)}\n"
@@ -118,37 +131,24 @@ def process_and_callback(data):
         with open(feedback_path, "w") as f:
             f.write(result_txt)
 
-        # Save chart
-        graph_path = f"{UPLOAD_FOLDER}/graph_{timestamp}.png"
-        save_graph(rms_student, rms_professor, graph_path)
-
-        # Upload both files
         feedback_url = upload_to_drive(feedback_path, os.path.basename(feedback_path))
-        graph_url = upload_to_drive(graph_path, os.path.basename(graph_path))
+        chart_url = generate_and_upload_chart(rms_student, rms_professor, timestamp)
 
         result = {
             "student_email": email,
-            "pitch_difference": round(float(pitch_diff), 2),
-            "timing_difference": round(float(timing_diff), 2),
+            "pitch_difference": float(round(pitch_diff, 2)),
+            "timing_difference": float(round(timing_diff, 2)),
             "feedback_url": feedback_url,
-            "graph_url": graph_url
+            "chart_url": chart_url
         }
+        requests.post(callback_url, json=result)
 
-        try:
-            print(f"📤 Sending result to callback URL: {callback_url}")
-            response = requests.post(callback_url, json=result)
-            print(f"✅ Callback status: {response.status_code}")
-            print(f"✅ Callback body: {response.text}")
-        except Exception as cb_err:
-            print(f"❌ Callback error: {cb_err}")
-
-        # TEMP: Disable cleanup while debugging
-        # for f in [student_path, professor_path, feedback_path, graph_path]:
-        #     if os.path.exists(f):
-        #         os.remove(f)
+        for f in [student_path, professor_path, feedback_path]:
+            if os.path.exists(f):
+                os.remove(f)
 
     except Exception as e:
-        print(f"❌ Processing error: {e}")
+        print(f"Processing error: {e}")
         if "callback_url" in data:
             requests.post(data["callback_url"], json={
                 "error": str(e),
@@ -157,15 +157,29 @@ def process_and_callback(data):
 
 @app.route("/", methods=["GET"])
 def index():
-    return "✅ AI Quartet Evaluator is running", 200
+    return "AI Quartet Evaluator is running", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing JSON data"}), 400
+
     threading.Thread(target=process_and_callback, args=(data,)).start()
     return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
+
+# TEST endpoint to verify upload works
+@app.route("/test-upload", methods=["GET"])
+def test_upload():
+    try:
+        test_path = f"{UPLOAD_FOLDER}/test.txt"
+        with open(test_path, "w") as f:
+            f.write("Test upload file.")
+        url = upload_to_drive(test_path, "test.txt")
+        os.remove(test_path)
+        return jsonify({"upload_success": True, "url": url}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
