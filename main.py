@@ -1,83 +1,66 @@
 import os
-import io
-import base64
+import uuid
 from flask import Flask, request, jsonify
-import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
+from datetime import timedelta
 
-# Initialize Flask
-app = Flask(__name__)
+# Set up Backblaze B2 credentials from environment
+B2_KEY_ID = os.getenv("B2_KEY_ID")
+B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
+B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 
-# Load environment variables
-B2_KEY_ID = os.environ.get("B2_KEY_ID")
-B2_APPLICATION_KEY = os.environ.get("B2_APPLICATION_KEY")
-B2_BUCKET_NAME = os.environ.get("B2_BUCKET_NAME")
-
-# Authorize and get B2 bucket
+# Backblaze B2 SDK setup
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)
 b2_api.authorize_account("production", B2_KEY_ID, B2_APPLICATION_KEY)
 bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 
-def upload_chart_to_b2(pitch_diff, timing_diff):
+app = Flask(__name__)
+
+@app.route("/webhook", methods=["POST"])
+def handle_webhook():
+    data = request.get_json()
+
+    # Simulated inputs: replace with your own file creation logic
+    pitch_diff = data.get("pitch_difference", 0.0)
+    timing_diff = data.get("timing_difference", 0.0)
+    graph_content = f"Pitch: {pitch_diff}\nTiming: {timing_diff}"
+    graph_filename = f"graph_{uuid.uuid4().hex}.txt"
+
+    # Upload the graph content as a file
     try:
-        # Generate the chart
-        fig, ax = plt.subplots()
-        ax.bar(['Pitch', 'Timing'], [pitch_diff, timing_diff], color=['blue', 'green'])
-        ax.set_ylabel('Difference')
-        ax.set_title('Pitch and Timing Differences')
-
-        # Save to bytes buffer
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-
-        # Generate unique filename
-        filename = f"chart_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png"
-
-        # Upload to B2
         file_info = {
-            'created': datetime.utcnow().isoformat()
+            "description": "Evaluation graph",
+            "contentType": "text/plain"
         }
-        uploaded_file = bucket.upload_bytes(buffer.read(), filename, file_info=file_info)
-
-        # Generate signed URL valid for 24 hours
-        url = bucket.get_download_url_by_id(uploaded_file.id_)
-        signed_url = b2_api.get_download_authorization(
-            bucket_id=bucket.id_,
-            file_name=filename,
-            valid_duration_in_seconds=24 * 3600
+        b2_file = bucket.upload_bytes(
+            data_bytes=graph_content.encode("utf-8"),
+            file_name=graph_filename,
+            content_type="text/plain",
+            file_info=file_info
         )
 
-        return f"{url}?Authorization={signed_url.authorization_token}"
-    except Exception as e:
-        print("Upload error:", str(e))
-        return "Upload failed."
+        # Create a signed URL valid for 24 hours
+        signed_url = b2_api.get_download_authorization(
+            bucket_id=bucket.id_,
+            file_name=graph_filename,
+            valid_duration_seconds=86400  # 24 hours
+        )
 
-@app.route('/')
-def home():
+        file_url = f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{graph_filename}?Authorization={signed_url.authorization_token}"
+
+        return jsonify({
+            "pitch_difference": pitch_diff,
+            "timing_difference": timing_diff,
+            "graph_url": file_url
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/", methods=["GET"])
+def index():
     return "AI Quartet Evaluator is running."
 
-@app.route('/webhook', methods=['POST'])
-def handle_webhook():
-    data = request.json
-    student_email = data.get("student_email")
-    pitch_diff = data.get("pitch_difference", 0)
-    timing_diff = data.get("timing_difference", 0)
-
-    print("Received data:", data)
-
-    # Upload the chart and get the secure URL
-    chart_url = upload_chart_to_b2(pitch_diff, timing_diff)
-
-    return jsonify({
-        "student_email": student_email,
-        "pitch_difference": pitch_diff,
-        "timing_difference": timing_diff,
-        "graph_url": chart_url
-    })
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    app.run(debug=False, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
