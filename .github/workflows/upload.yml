@@ -1,16 +1,15 @@
 name: Upload to Backblaze B2
 
 on:
-  workflow_dispatch:  # allows manual trigger
-  push:
-    paths:
-      - output_graph.png
+  repository_dispatch:
+    types: [zapier-trigger]  # Triggered via Zapier webhook
 
 jobs:
-  upload:
+  upload-to-b2:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -23,9 +22,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install b2sdk
 
-      - name: Upload to B2
+      - name: Run upload_to_b2.py
+        run: python upload_to_b2.py
         env:
           B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
           B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
           B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
-        run: python upload_to_b2.py
