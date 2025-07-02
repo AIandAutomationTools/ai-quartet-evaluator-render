@@ -1,66 +1,72 @@
 import os
-import uuid
+import io
 from flask import Flask, request, jsonify
+import matplotlib.pyplot as plt
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
-from datetime import timedelta
+import uuid
+import numpy as np
 
-# Set up Backblaze B2 credentials from environment
-B2_KEY_ID = os.getenv("B2_KEY_ID")
-B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
-B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
+# Load environment variables
+B2_KEY_ID = os.environ.get("B2_KEY_ID")
+B2_APPLICATION_KEY = os.environ.get("B2_APPLICATION_KEY")
+B2_BUCKET_NAME = os.environ.get("B2_BUCKET_NAME")
 
-# Backblaze B2 SDK setup
+# Authorize B2
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)
 b2_api.authorize_account("production", B2_KEY_ID, B2_APPLICATION_KEY)
 bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 
+# Set up Flask
 app = Flask(__name__)
 
-@app.route("/webhook", methods=["POST"])
-def handle_webhook():
-    data = request.get_json()
-
-    # Simulated inputs: replace with your own file creation logic
-    pitch_diff = data.get("pitch_difference", 0.0)
-    timing_diff = data.get("timing_difference", 0.0)
-    graph_content = f"Pitch: {pitch_diff}\nTiming: {timing_diff}"
-    graph_filename = f"graph_{uuid.uuid4().hex}.txt"
-
-    # Upload the graph content as a file
-    try:
-        file_info = {
-            "description": "Evaluation graph",
-            "contentType": "text/plain"
-        }
-        b2_file = bucket.upload_bytes(
-            data_bytes=graph_content.encode("utf-8"),
-            file_name=graph_filename,
-            content_type="text/plain",
-            file_info=file_info
-        )
-
-        # Create a signed URL valid for 24 hours
-        signed_url = b2_api.get_download_authorization(
-            bucket_id=bucket.id_,
-            file_name=graph_filename,
-            valid_duration_seconds=86400  # 24 hours
-        )
-
-        file_url = f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{graph_filename}?Authorization={signed_url.authorization_token}"
-
-        return jsonify({
-            "pitch_difference": pitch_diff,
-            "timing_difference": timing_diff,
-            "graph_url": file_url
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 @app.route("/", methods=["GET"])
-def index():
-    return "AI Quartet Evaluator is running."
+def health_check():
+    return "OK", 200
+
+@app.route("/webhook", methods=["POST"])
+def process_webhook():
+    data = request.json
+    student_pitch = data.get("student_pitch", [])
+    reference_pitch = data.get("reference_pitch", [])
+    student_time = data.get("student_time", [])
+    reference_time = data.get("reference_time", [])
+
+    if not (student_pitch and reference_pitch and student_time and reference_time):
+        return jsonify({"error": "Missing data"}), 400
+
+    pitch_diff = float(np.mean(np.abs(np.array(student_pitch) - np.array(reference_pitch))))
+    time_diff = float(np.mean(np.abs(np.array(student_time) - np.array(reference_time))))
+
+    # Plotting
+    fig, axs = plt.subplots(2, 1, figsize=(10, 6))
+
+    axs[0].plot(reference_pitch, label='Reference Pitch')
+    axs[0].plot(student_pitch, label='Student Pitch', linestyle='--')
+    axs[0].legend()
+    axs[0].set_title("Pitch Comparison")
+
+    axs[1].plot(reference_time, label='Reference Timing')
+    axs[1].plot(student_time, label='Student Timing', linestyle='--')
+    axs[1].legend()
+    axs[1].set_title("Timing Comparison")
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+
+    # Upload graph to B2
+    graph_filename = f"{uuid.uuid4()}.png"
+    bucket.upload_bytes(buf.read(), graph_filename)
+    signed_url = bucket.get_download_url_by_name(graph_filename, authorization_token=b2_api.get_download_authorization(B2_BUCKET_NAME, graph_filename, 3600))
+
+    return jsonify({
+        "Pitch Difference": pitch_diff,
+        "Timing Difference": time_diff,
+        "Graph": signed_url
+    }), 200
 
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    app.run(host="0.0.0.0", port=10000)
+
