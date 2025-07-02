@@ -14,7 +14,7 @@ B2_BUCKET_NAME = os.environ.get("B2_BUCKET_NAME")
 # Authorize B2
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)
-b2_api.authorize_account("production", B2_KEY_ID, B2_APPLICATION_KEY)
+b2_api.authorize_account("https://api.backblazeb2.com", B2_KEY_ID, B2_APPLICATION_KEY)
 bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 
 # Set up Flask
@@ -59,7 +59,12 @@ def process_webhook():
     # Upload graph to B2
     graph_filename = f"{uuid.uuid4()}.png"
     bucket.upload_bytes(buf.read(), graph_filename)
-    signed_url = bucket.get_download_url_by_name(graph_filename, authorization_token=b2_api.get_download_authorization(B2_BUCKET_NAME, graph_filename, 3600))
+    signed_url = bucket.get_download_url_by_name(
+        graph_filename,
+        authorization_token=b2_api.get_download_authorization(
+            B2_BUCKET_NAME, graph_filename, 3600
+        )
+    )
 
     return jsonify({
         "Pitch Difference": pitch_diff,
