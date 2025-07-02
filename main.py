@@ -1,33 +1,30 @@
 import os
-import io
-import json
+import threading
 import requests
 import librosa
 import numpy as np
 import soundfile as sf
 import matplotlib.pyplot as plt
 from flask import Flask, request, jsonify
-import threading
 from datetime import datetime
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
 
-# Flask setup
-app = Flask(__name__)
-UPLOAD_FOLDER = "downloads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# Backblaze B2 credentials (set in Render as env variables)
+# === B2 Setup ===
 B2_KEY_ID = os.getenv("B2_KEY_ID")
 B2_APP_KEY = os.getenv("B2_APP_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 
-# Authenticate B2
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)
 b2_api.authorize_account("production", B2_KEY_ID, B2_APP_KEY)
 bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 
+# === Flask App ===
+app = Flask(__name__)
+UPLOAD_FOLDER = "downloads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# === Helper Functions ===
 def download_file(url, filename):
     try:
         r = requests.get(url.strip())
@@ -38,7 +35,6 @@ def download_file(url, filename):
     except Exception as e:
         print(f"Download error: {e}")
         return False
-
 
 def compare_audio(student_path, professor_path):
     y_student, sr_student = librosa.load(student_path)
@@ -56,33 +52,27 @@ def compare_audio(student_path, professor_path):
     rms_professor = librosa.feature.rms(y=y_professor)[0]
     rms_diff = np.mean(np.abs(rms_student - rms_professor))
 
-    return pitch_diff, rms_diff, rms_student, rms_professor
+    return pitch_diff, rms_diff, y_student, y_professor, sr_student
 
-
-def generate_chart(student_rms, professor_rms, out_path):
+def save_waveform_plot(y1, y2, sr, filename):
     plt.figure(figsize=(10, 4))
-    plt.plot(student_rms, label="Student RMS", color="blue")
-    plt.plot(professor_rms, label="Professor RMS", color="orange")
-    plt.title("Volume Comparison")
-    plt.xlabel("Frame")
-    plt.ylabel("RMS")
+    plt.plot(y1, label='Student', alpha=0.7)
+    plt.plot(y2, label='Professor', alpha=0.7)
+    plt.title('Audio Comparison')
     plt.legend()
     plt.tight_layout()
-    plt.savefig(out_path)
+    plt.savefig(filename)
     plt.close()
-
 
 def upload_to_b2(file_path, file_name):
     try:
         with open(file_path, "rb") as f:
-            file_info = {"uploaded": datetime.now().isoformat()}
-            bucket.upload_bytes(f.read(), file_name, file_infos=file_info)
-        file_url = f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{file_name}"
-        return file_url
+            b2_file = bucket.upload_bytes(f.read(), file_name)
+        url = bucket.get_download_url(file_name, valid_duration_in_seconds=86400)  # 24 hours
+        return url
     except Exception as e:
-        print(f"B2 Upload error: {e}")
-        return None
-
+        print(f"B2 upload error: {e}")
+        return "Upload failed."
 
 def process_and_callback(data):
     try:
@@ -99,32 +89,32 @@ def process_and_callback(data):
             requests.post(callback_url, json={"error": "File download failed", "student_email": email})
             return
 
-        pitch_diff, timing_diff, student_rms, professor_rms = compare_audio(student_path, professor_path)
+        pitch_diff, timing_diff, y_student, y_professor, sr = compare_audio(student_path, professor_path)
 
-        feedback_text = (
-            f"Pitch Difference: {round(float(pitch_diff), 2)}\n"
-            f"Timing Difference: {round(float(timing_diff), 2)}\n"
-        )
+        # Save feedback
+        result_txt = f"Pitch Difference: {round(float(pitch_diff), 2)}\nTiming Difference: {round(float(timing_diff), 2)}\n"
         feedback_path = f"{UPLOAD_FOLDER}/feedback_{timestamp}.txt"
         with open(feedback_path, "w") as f:
-            f.write(feedback_text)
+            f.write(result_txt)
 
-        chart_path = f"{UPLOAD_FOLDER}/chart_{timestamp}.png"
-        generate_chart(student_rms, professor_rms, chart_path)
+        # Save graph
+        graph_path = f"{UPLOAD_FOLDER}/graph_{timestamp}.png"
+        save_waveform_plot(y_student, y_professor, sr, graph_path)
 
-        feedback_url = upload_to_b2(feedback_path, os.path.basename(feedback_path)) or "Upload failed."
-        chart_url = upload_to_b2(chart_path, os.path.basename(chart_path)) or "Upload failed."
+        # Upload files
+        feedback_url = upload_to_b2(feedback_path, os.path.basename(feedback_path))
+        graph_url = upload_to_b2(graph_path, os.path.basename(graph_path))
 
         result = {
             "student_email": email,
             "pitch_difference": float(round(pitch_diff, 2)),
             "timing_difference": float(round(timing_diff, 2)),
             "feedback_url": feedback_url,
-            "graph_url": chart_url,
+            "graph_url": graph_url
         }
         requests.post(callback_url, json=result)
 
-        for f in [student_path, professor_path, feedback_path, chart_path]:
+        for f in [student_path, professor_path, feedback_path, graph_path]:
             if os.path.exists(f):
                 os.remove(f)
 
@@ -133,11 +123,9 @@ def process_and_callback(data):
         if "callback_url" in data:
             requests.post(data["callback_url"], json={"error": str(e), "student_email": data.get("student_email", "")})
 
-
 @app.route("/", methods=["GET"])
 def index():
-    return "AI Quartet Evaluator with B2 is running", 200
-
+    return "AI Quartet Evaluator with Backblaze B2 is running", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -148,6 +136,6 @@ def webhook():
     threading.Thread(target=process_and_callback, args=(data,)).start()
     return jsonify({"status": "received", "student_email": data.get("student_email")}), 200
 
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    app.run(host="0.0.0.0", port=10000)
+
