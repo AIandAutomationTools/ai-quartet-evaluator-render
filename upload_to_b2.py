@@ -64,7 +64,7 @@ print(f"🔎 B2_BUCKET_NAME: {B2_BUCKET_NAME}")
 
 
 
-b2_api.authorize_account("production", B2_KEY_ID, B2_APPLICATION_KEY)
+b2_api.authorize_account("production", B2_KEY_ID, B2_APP_KEY)
 bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 if not bucket:
     raise Exception(f"Bucket '{B2_BUCKET_NAME}' not found.")
