@@ -1,40 +1,29 @@
 name: b2-upload
 
 on:
+  workflow_dispatch:
   repository_dispatch:
-    types: [upload-graph]
+    types: [trigger-b2-upload]
 
 jobs:
   upload:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: 📥 Checkout repo
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install matplotlib librosa b2sdk
 
-      - name: Run app to generate graph
+      - name: 🧪 Run main.py
         run: python main.py
 
-      - name: Debug file exists
-        run: |
-          if [ -f output_graph.png ]; then
-            echo "✅ output_graph.png exists"
-          else
-            echo "❌ output_graph.png missing"
-            exit 1
-          fi
-
-      - name: Upload to Backblaze B2
-        run: python upload_to_b2.py
-        env:
-          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
-          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+      - name: 📁 Show files
+        run: ls -lh
