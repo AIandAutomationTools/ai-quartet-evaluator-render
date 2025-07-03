@@ -6,7 +6,7 @@ from b2sdk.v2.exception import InvalidAuthToken
 
 # === Load environment variables ===
 B2_KEY_ID = os.getenv("B2_KEY_ID")
-B2_APP_KEY = os.getenv("B2_APP_KEY")
+B2_APP_KEY = os.getenv("B2_APP_KEY")  # Was incorrectly named in earlier version
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 CLIENT_PAYLOAD_RAW = os.getenv("CLIENT_PAYLOAD")
 
@@ -55,14 +55,9 @@ print("🔐 Authorizing with Backblaze B2...")
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)
 
-
 print(f"🔎 B2_KEY_ID: {B2_KEY_ID}")
 print(f"🔎 B2_APP_KEY starts with: {B2_APP_KEY[:6]}... (length: {len(B2_APP_KEY)})")
 print(f"🔎 B2_BUCKET_NAME: {B2_BUCKET_NAME}")
-
-
-
-
 
 b2_api.authorize_account("production", B2_KEY_ID, B2_APP_KEY)
 bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
@@ -79,21 +74,16 @@ download_url = f"https://f000.backblazeb2.com/file/{bucket.name}/{b2_filename}"
 print(f"✅ Uploaded to: {download_url}")
 
 # === Callback to Zapier ===
-print(f"📬 Sending result to callback URL...")
+print("📬 Sending result to callback URL...")
 callback_payload = {
     "student_email": student_email,
-    "download_url": download_url
-}
-print(f"📤 Sending to callback URL: {callback_url}")
-print("📦 Payload:", json.dumps({
-    "student_email": student_email,
-    "public_download_url": public_url,
+    "public_download_url": download_url,
     "professor_url": professor_url,
     "student_url": student_url
-}, indent=2))
+}
 
-
-
+print(f"📤 Sending to callback URL: {callback_url}")
+print("📦 Payload:", json.dumps(callback_payload, indent=2))
 
 r = requests.post(callback_url, json=callback_payload)
 if r.status_code != 200:
