@@ -2,29 +2,41 @@ name: Upload to Backblaze B2
 
 on:
   repository_dispatch:
-    types: [zapier-trigger]  # Triggered via Zapier webhook
+    types: [b2-upload]
 
 jobs:
-  upload-to-b2:
+  upload:
     runs-on: ubuntu-latest
 
+    env:
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+
     steps:
-      - name: Checkout repository
+      - name: Checkout repo (not strictly needed, but safe)
         uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: 3.11
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install b2sdk
+          pip install b2sdk requests
 
-      - name: Run upload_to_b2.py
-        run: python upload_to_b2.py
-        env:
-          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
-          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+      - name: Create dynamic file for upload
+        run: |
+          echo "Simulated content from student ${{
+            github.event.client_payload.student_email
+          }}" > test_upload.txt
+
+      - name: Upload to Backblaze B2
+        run: |
+          python upload_to_b2.py \
+            "${{ github.event.client_payload.student_url }}" \
+            "${{ github.event.client_payload.professor_url }}" \
+            "${{ github.event.client_payload.callback_url }}" \
+            "${{ github.event.client_payload.student_email }}"
+
