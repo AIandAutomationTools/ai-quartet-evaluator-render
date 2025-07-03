@@ -10,7 +10,7 @@ jobs:
 
     env:
       B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-      B2_APP_KEY: ${{ secrets.B2_APP_KEY }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APP_KEY }}
       B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
       CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
 
@@ -26,6 +26,5 @@ jobs:
       - name: 📦 Install dependencies
         run: pip install -r requirements.txt
 
-      - name: 🚀 Run upload script
-        run: python upload_to_b2.py
-
+      - name: 🚀 Run audio analysis and upload
+        run: python main.py
