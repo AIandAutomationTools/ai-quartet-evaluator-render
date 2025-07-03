@@ -4,8 +4,6 @@ on:
   repository_dispatch:
     types: [b2-upload]
 
-
-
 jobs:
   upload:
     runs-on: ubuntu-latest
