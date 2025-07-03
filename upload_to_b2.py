@@ -4,12 +4,15 @@ import requests
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
 from b2sdk.v2.exception import InvalidAuthToken
 
-# === Load secrets from environment ===
+# === Load environment variables ===
 B2_KEY_ID = os.getenv("B2_KEY_ID")
-B2_APPLICATION_KEY = os.getenv("B2_APP_KEY")
+B2_APP_KEY = os.getenv("B2_APP_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
-
 CLIENT_PAYLOAD_RAW = os.getenv("CLIENT_PAYLOAD")
+
+if not all([B2_KEY_ID, B2_APP_KEY, B2_BUCKET_NAME]):
+    raise EnvironmentError("❌ One or more required B2 environment variables are missing!")
+
 if CLIENT_PAYLOAD_RAW is None:
     raise ValueError("CLIENT_PAYLOAD is missing.")
 
