@@ -1,7 +1,6 @@
 name: b2-upload
 
 on:
-  workflow_dispatch:
   repository_dispatch:
     types: [trigger-b2-upload]
 
@@ -20,10 +19,12 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install matplotlib librosa b2sdk
+          pip install matplotlib librosa requests b2sdk
 
-      - name: 🧪 Run main.py
+      - name: 🧪 Run upload
         run: python main.py
-
-      - name: 📁 Show files
-        run: ls -lh
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APP_KEY: ${{ secrets.B2_APP_KEY }}
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+          CLIENT_PAYLOAD: ${{ github.event.client_payload | toJson }}
