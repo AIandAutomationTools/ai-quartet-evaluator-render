@@ -10,7 +10,10 @@ from b2sdk.v2.exception import InvalidAuthToken
 print("🔄 Loading environment variables...")
 
 B2_KEY_ID = os.getenv("B2_KEY_ID")
-B2_APPLICATION_KEY = os.getenv("B2_APP_KEY")
+
+B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
+
+
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 CLIENT_PAYLOAD_RAW = os.getenv("CLIENT_PAYLOAD")
 
