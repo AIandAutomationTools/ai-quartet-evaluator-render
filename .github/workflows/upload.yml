@@ -1,17 +1,12 @@
-name: Upload to Backblaze B2
+name: b2-upload
 
 on:
   repository_dispatch:
-    types: [b2-upload]
+    types: [upload-graph]
 
 jobs:
   upload:
     runs-on: ubuntu-latest
-
-    env:
-      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
-      B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
 
     steps:
       - name: Checkout repo
@@ -20,24 +15,26 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11
+          python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install b2sdk requests
+        run: pip install -r requirements.txt
 
-      - name: Debug incoming payload
-        run: |
-          echo "👀 Payload received:"
-          echo "Student URL: ${{ github.event.client_payload.student_url }}"
-          echo "Professor URL: ${{ github.event.client_payload.professor_url }}"
-          echo "Callback URL: ${{ github.event.client_payload.callback_url }}"
-          echo "Student Email: ${{ github.event.client_payload.student_email }}"
+      - name: Run app to generate graph
+        run: python main.py
 
-      - name: Upload to B2
+      - name: Debug file exists
         run: |
-          python upload_to_b2.py \
-            "${{ github.event.client_payload.student_url }}" \
-            "${{ github.event.client_payload.professor_url }}" \
-            "${{ github.event.client_payload.callback_url }}" \
-            "${{ github.event.client_payload.student_email }}"
+          if [ -f output_graph.png ]; then
+            echo "✅ output_graph.png exists"
+          else
+            echo "❌ output_graph.png missing"
+            exit 1
+          fi
+
+      - name: Upload to Backblaze B2
+        run: python upload_to_b2.py
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
