@@ -1,8 +1,10 @@
-name: b2-upload
+name: Upload to Backblaze B2
 
 on:
   repository_dispatch:
-    types: [trigger-b2-upload]
+    types: [b2-upload]
+
+
 
 jobs:
   upload:
