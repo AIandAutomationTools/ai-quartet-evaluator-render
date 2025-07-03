@@ -14,7 +14,7 @@ jobs:
       B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
 
     steps:
-      - name: Checkout repo (not strictly needed, but safe)
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -26,17 +26,18 @@ jobs:
         run: |
           pip install b2sdk requests
 
-      - name: Create dynamic file for upload
+      - name: Debug incoming payload
         run: |
-          echo "Simulated content from student ${{
-            github.event.client_payload.student_email
-          }}" > test_upload.txt
+          echo "👀 Payload received:"
+          echo "Student URL: ${{ github.event.client_payload.student_url }}"
+          echo "Professor URL: ${{ github.event.client_payload.professor_url }}"
+          echo "Callback URL: ${{ github.event.client_payload.callback_url }}"
+          echo "Student Email: ${{ github.event.client_payload.student_email }}"
 
-      - name: Upload to Backblaze B2
+      - name: Upload to B2
         run: |
           python upload_to_b2.py \
             "${{ github.event.client_payload.student_url }}" \
             "${{ github.event.client_payload.professor_url }}" \
             "${{ github.event.client_payload.callback_url }}" \
             "${{ github.event.client_payload.student_email }}"
-
