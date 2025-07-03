@@ -51,6 +51,16 @@ print(f"🖼️ Created placeholder graph at {graph_filename}")
 print("🔐 Authorizing with Backblaze B2...")
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)
+
+
+print(f"🔎 B2_KEY_ID: {B2_KEY_ID}")
+print(f"🔎 B2_APP_KEY starts with: {B2_APP_KEY[:6]}... (length: {len(B2_APP_KEY)})")
+print(f"🔎 B2_BUCKET_NAME: {B2_BUCKET_NAME}")
+
+
+
+
+
 b2_api.authorize_account("production", B2_KEY_ID, B2_APPLICATION_KEY)
 bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 if not bucket:
