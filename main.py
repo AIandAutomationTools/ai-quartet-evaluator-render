@@ -1,21 +1,21 @@
 import os
 import json
+import requests
 import librosa
 import matplotlib.pyplot as plt
-import requests
-from datetime import timedelta
+from urllib.parse import quote
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
 from b2sdk.v2.exception import InvalidAuthToken
 
 # === Load environment variables ===
-print("🔄 Loading environment variables...")
+print("🔄 Loading environment variables...\n")
 
 B2_KEY_ID = os.getenv("B2_KEY_ID")
 B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 CLIENT_PAYLOAD_RAW = os.getenv("CLIENT_PAYLOAD")
 
-print(f"\n🔍 Env debug:")
+print(f"🔍 Env debug:")
 print(f"✅ B2_KEY_ID: {B2_KEY_ID}")
 print(f"✅ B2_BUCKET_NAME: {B2_BUCKET_NAME}")
 print(f"✅ B2_APPLICATION_KEY length: {len(B2_APPLICATION_KEY) if B2_APPLICATION_KEY else 'None'}")
@@ -25,7 +25,7 @@ if not B2_KEY_ID or not B2_APPLICATION_KEY or not B2_BUCKET_NAME or not CLIENT_P
     print("❌ ERROR: One or more required environment variables are missing!")
     exit(1)
 
-# === Parse client_payload ===
+# === Parse payload ===
 try:
     payload = json.loads(CLIENT_PAYLOAD_RAW)
     callback_url = payload["callback_url"]
@@ -33,11 +33,10 @@ try:
     student_url = payload["student_url"]
     student_email = payload["student_email"]
 except Exception as e:
-    print("❌ Error parsing client_payload")
-    print(e)
+    print("❌ Error parsing client_payload:", e)
     exit(1)
 
-# === Download files ===
+# === Download MP3s ===
 def download_file(url, filename):
     print(f"⬇️ Downloading {url}...")
     r = requests.get(url)
@@ -47,25 +46,22 @@ def download_file(url, filename):
         f.write(r.content)
     print(f"✅ Saved to {filename}")
 
-student_file = "student.mp3"
-professor_file = "professor.mp3"
-output_graph = "output_graph.png"
+download_file(student_url, "student.mp3")
+download_file(professor_url, "professor.mp3")
 
-download_file(student_url, student_file)
-download_file(professor_url, professor_file)
-
-# === Load audio and compute pitch ===
+# === Analyze pitch ===
 print("🎼 Extracting pitch...")
-prof_y, _ = librosa.load(professor_file)
-stud_y, _ = librosa.load(student_file)
+prof_y, _ = librosa.load("professor.mp3")
+stud_y, _ = librosa.load("student.mp3")
 
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
 pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
-timing_diff = abs(len(prof_pitch) - len(stud_pitch))
+timing_diff = abs(len(prof_y) - len(stud_y)) / 22050.0  # in seconds
 
 # === Create graph ===
+graph_file = "output_graph.png"
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
@@ -74,8 +70,8 @@ plt.title("Pitch Comparison")
 plt.xlabel("Time Frame")
 plt.ylabel("Frequency (Hz)")
 plt.tight_layout()
-plt.savefig(output_graph)
-print(f"✅ Graph saved: {output_graph}")
+plt.savefig(graph_file)
+print(f"✅ Graph saved: {graph_file}")
 
 # === Upload to B2 and generate temp URL ===
 try:
@@ -86,27 +82,32 @@ try:
     bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 
     b2_filename = f"{student_email.replace('@', '_').replace('.', '_')}_graph.png"
-    print(f"📤 Uploading {output_graph} to B2 as {b2_filename}...")
+    print(f"📤 Uploading {graph_file} to B2 as {b2_filename}...")
     bucket.upload_local_file(
-        local_file=output_graph,
+        local_file=graph_file,
         file_name=b2_filename,
     )
     print("✅ Upload complete.")
 
-    # === Temporary URL (1 hour)
-    graph_url = b2_api.get_download_url_with_auth(
-        bucket_id=bucket.id_,
-        file_name=b2_filename,
-        valid_duration=timedelta(hours=1)
+    # === Generate temporary download URL
+    valid_seconds = 3600  # 1 hour
+    auth_token = bucket.get_download_authorization(
+        file_name_prefix=b2_filename,
+        valid_duration_in_seconds=valid_seconds
+    )
+    encoded_filename = quote(b2_filename)
+    graph_url = (
+        f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{encoded_filename}"
+        f"?Authorization={auth_token.authorization_token}"
     )
     print(f"🌐 Temporary Download URL: {graph_url}")
 
-    # === Send callback to Zapier ===
+    # === Send callback to Zapier
     payload_to_zapier = {
         "student_email": student_email,
         "graph_url": graph_url,
         "pitch_difference": round(pitch_diff, 2),
-        "timing_difference": timing_diff,
+        "timing_difference": round(timing_diff, 2),
     }
 
     print(f"📡 Sending result to Zapier: {callback_url}")
