@@ -2,7 +2,7 @@ name: b2-upload
 
 on:
   repository_dispatch:
-    types: [b2-upload]  # This must match the "event_type" from your Zapier webhook
+    types: [b2-upload]  # Must match the "event_type" from Zapier
 
 jobs:
   upload:
@@ -24,7 +24,10 @@ jobs:
           python-version: 3.11
 
       - name: 📦 Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: 🚀 Run audio analysis and upload
+      - name: 🚀 Run pitch analysis + upload
         run: python main.py
+
