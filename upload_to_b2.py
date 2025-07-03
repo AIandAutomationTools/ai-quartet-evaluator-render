@@ -84,6 +84,17 @@ callback_payload = {
     "student_email": student_email,
     "download_url": download_url
 }
+print(f"📤 Sending to callback URL: {callback_url}")
+print("📦 Payload:", json.dumps({
+    "student_email": student_email,
+    "public_download_url": public_url,
+    "professor_url": professor_url,
+    "student_url": student_url
+}, indent=2))
+
+
+
+
 r = requests.post(callback_url, json=callback_payload)
 if r.status_code != 200:
     raise Exception(f"Callback failed → {r.status_code}:\n{r.text}")
