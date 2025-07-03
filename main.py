@@ -91,15 +91,18 @@ try:
 
     # === Generate temporary download URL
     valid_seconds = 3600  # 1 hour
-    auth_token = bucket.get_download_authorization(
-        file_name_prefix=b2_filename,
-        valid_duration_in_seconds=valid_seconds
-    )
-    encoded_filename = quote(b2_filename)
-    graph_url = (
-        f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{encoded_filename}"
-        f"?Authorization={auth_token.authorization_token}"
-    )
+    download_auth_token = b2_api.get_download_authorization(
+    bucket_id=bucket.id_,
+    file_name_prefix=b2_filename,
+    valid_duration_in_seconds=valid_seconds,
+)
+
+encoded_filename = quote(b2_filename)
+graph_url = (
+    f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{encoded_filename}"
+    f"?Authorization={download_auth_token}"
+)
+
     print(f"🌐 Temporary Download URL: {graph_url}")
 
     # === Send callback to Zapier
