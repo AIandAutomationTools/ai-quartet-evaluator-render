@@ -99,7 +99,7 @@ print(f"🌐 Public Graph URL: {download_url}")
 # === Send result to Zapier
 callback_payload = {
     "student_email": student_email,
-    "graph_url": signed_url,
+    "graph_url": download_url,
     "pitch_difference": round(pitch_diff, 2),
     "timing_difference": timing_diff,
     "student_url": student_url,
