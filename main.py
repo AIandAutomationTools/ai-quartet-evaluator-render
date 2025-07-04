@@ -93,8 +93,8 @@ print("✅ Upload complete.")
 # Generate signed URL (temporary access)
 download_url = f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{b2_filename}"
 
+print(f"🌐 Public Graph URL: {download_url}")
 
-print(f"🌐 Temporary Graph URL: {signed_url}")
 
 # === Send result to Zapier
 callback_payload = {
