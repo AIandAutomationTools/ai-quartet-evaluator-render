@@ -3,9 +3,9 @@ import json
 import librosa
 import matplotlib.pyplot as plt
 import requests
-from urllib.parse import quote
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
 from b2sdk.v2.exception import InvalidAuthToken
+from urllib.parse import quote
 
 # === Load environment variables ===
 print("🔄 Loading environment variables...")
@@ -37,26 +37,26 @@ except Exception as e:
     print(e)
     exit(1)
 
-# === File names ===
+# === Filenames ===
 professor_file = "professor.mp3"
 student_file = "student.mp3"
-output_graph = "output_graph.png"
-b2_filename = f"{student_email.replace('@', '_').replace('.', '_')}_graph.png"
+graph_filename = "output_graph.png"
 
-# === Download MP3s ===
-def download_file(url, dest_filename):
+# === Download files ===
+def download_file(url, dest):
     print(f"⬇️ Downloading {url}...")
     r = requests.get(url)
     if r.status_code != 200:
-        raise Exception(f"Failed to download {url} → {r.status_code}")
-    with open(dest_filename, "wb") as f:
+        print(f"❌ Failed to download {url} → {r.status_code}")
+        exit(1)
+    with open(dest, "wb") as f:
         f.write(r.content)
-    print(f"✅ Saved to {dest_filename}")
+    print(f"✅ Saved to {dest}")
 
 download_file(student_url, student_file)
 download_file(professor_url, professor_file)
 
-# === Extract pitch data ===
+# === Pitch Analysis ===
 print("🎼 Extracting pitch...")
 prof_y, _ = librosa.load(professor_file)
 stud_y, _ = librosa.load(student_file)
@@ -64,7 +64,11 @@ stud_y, _ = librosa.load(student_file)
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
-# === Create pitch comparison graph ===
+# Calculate basic pitch and timing difference (simplified)
+pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
+timing_diff = abs(len(prof_pitch) - len(stud_pitch)) / 100.0  # arbitrary unit
+
+# === Create graph ===
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
@@ -73,12 +77,8 @@ plt.title("Pitch Comparison")
 plt.xlabel("Time Frame")
 plt.ylabel("Frequency (Hz)")
 plt.tight_layout()
-plt.savefig(output_graph)
-print(f"✅ Graph saved: {output_graph}")
-
-# === Analyze pitch and timing difference ===
-pitch_diff = float(abs(prof_pitch.mean() - stud_pitch.mean()))
-timing_diff = float(abs(len(prof_pitch) - len(stud_pitch)))
+plt.savefig(graph_filename)
+print(f"✅ Graph saved: {graph_filename}")
 
 # === Upload to B2 ===
 try:
@@ -88,34 +88,27 @@ try:
     b2_api.authorize_account("production", B2_KEY_ID, B2_APPLICATION_KEY)
     bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 
-    print(f"📤 Uploading {output_graph} to B2 as {b2_filename}...")
-    bucket.upload_local_file(local_file=output_graph, file_name=b2_filename)
+    b2_filename = student_email.replace("@", "_").replace(".", "_") + "_graph.png"
+    print(f"📤 Uploading {graph_filename} to B2 as {b2_filename}...")
+    b2_file = bucket.upload_local_file(local_file=graph_filename, file_name=b2_filename)
     print("✅ Upload complete.")
 
-    # === Generate temporary download URL ===
+    # Generate temporary download URL (signed URL)
+    from b2sdk.v2 import DownloadAuthorization
+    auth_token = bucket.get_download_authorization(file_name_prefix=b2_filename, valid_duration_in_seconds=3600)
     encoded_filename = quote(b2_filename)
-    auth_token = bucket.get_download_authorization(
-        file_name_prefix=b2_filename,
-        valid_duration_in_seconds=3600  # 1 hour
-    )
-    graph_url = (
-    f"https://s3.us-east-005.backblazeb2.com/Quartet-Eval/{encoded_filename}"
-    f"?Authorization={auth_token}"
-    )
+    download_url = f"https://s3.us-east-005.backblazeb2.com/{B2_BUCKET_NAME}/{encoded_filename}?Authorization={auth_token.authorization_token}"
+    print(f"🌐 Temporary Download URL: {download_url}")
 
-   
-    print(f"🌐 Temporary graph URL: {graph_url}")
-
-    # === Send callback to Zapier ===
+    # === Send callback ===
     payload_to_zapier = {
         "student_email": student_email,
         "student_url": student_url,
         "professor_url": professor_url,
-        "graph_url": graph_url,
-        "pitch_difference": pitch_diff,
-        "timing_difference": timing_diff
+        "graph_url": download_url,
+        "pitch_difference": round(float(pitch_diff), 2),
+        "timing_difference": round(float(timing_diff), 2)
     }
-    print(f"🧪 Final Graph URL: {graph_url}")
 
     print(f"📡 Sending result to Zapier: {callback_url}")
     response = requests.post(callback_url, json=payload_to_zapier)
@@ -128,3 +121,4 @@ except InvalidAuthToken as e:
 except Exception as e:
     print("❌ Error:", e)
     exit(1)
+
