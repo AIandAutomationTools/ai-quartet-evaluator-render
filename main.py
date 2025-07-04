@@ -99,7 +99,7 @@ try:
         valid_duration_in_seconds=3600  # 1 hour
     )
     graph_url = (
-    f"https://s3.us-east-005.backblazeb2.com/{B2_BUCKET_NAME}/{encoded_filename}"
+    f"https://s3.us-east-005.backblazeb2.com/Quartet-Eval/{encoded_filename}"
     f"?Authorization={auth_token}"
     )
 
