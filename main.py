@@ -3,7 +3,11 @@ import json
 import requests
 import librosa
 import matplotlib.pyplot as plt
-from urllib.parse import quote
+import datetime
+import hashlib
+import hmac
+from urllib.parse import quote_plus
+
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
 
 # === Load environment variables ===
@@ -24,7 +28,7 @@ if not B2_KEY_ID or not B2_APPLICATION_KEY or not B2_BUCKET_NAME or not CLIENT_P
     print("❌ Missing required environment variables.")
     exit(1)
 
-# === Parse JSON payload from Zapier ===
+# === Parse JSON payload ===
 try:
     payload = json.loads(CLIENT_PAYLOAD_RAW)
     callback_url = payload["callback_url"]
@@ -35,33 +39,33 @@ except Exception as e:
     print("❌ Failed to parse client payload:", e)
     exit(1)
 
-# === Filenames ===
+# === Prepare file names ===
 student_file = "student.mp3"
 professor_file = "professor.mp3"
 graph_file = "output_graph.png"
 b2_filename = student_email.replace("@", "_").replace(".", "_") + "_graph.png"
 
-# === Download audio files ===
+# === Download files ===
 def download_file(url, output_path):
     print(f"⬇️ Downloading {url}...")
-    response = requests.get(url)
-    if response.status_code != 200:
-        raise Exception(f"Failed to download: {url}")
+    r = requests.get(url)
+    if r.status_code != 200:
+        raise Exception(f"❌ Failed to download file: {url}")
     with open(output_path, "wb") as f:
-        f.write(response.content)
+        f.write(r.content)
     print(f"✅ Saved to {output_path}")
 
 download_file(student_url, student_file)
 download_file(professor_url, professor_file)
 
-# === Analyze pitch ===
+# === Extract pitch ===
 print("🎼 Extracting pitch...")
 prof_y, _ = librosa.load(professor_file)
 stud_y, _ = librosa.load(student_file)
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
-# === Create pitch comparison graph ===
+# === Create graph ===
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
@@ -84,31 +88,81 @@ print(f"📤 Uploading {graph_file} to B2 as {b2_filename}...")
 bucket.upload_local_file(local_file=graph_file, file_name=b2_filename)
 print("✅ Upload complete.")
 
-# === Generate temporary signed URL (valid 1 hour) ===
-print("🔑 Generating temporary signed URL...")
-download_auth = b2_api.get_download_authorization(
-    bucket_id=bucket.id_,
-    file_name_prefix=b2_filename,
-    valid_duration_in_seconds=3600  # 1 hour
+# === Create S3-style signed URL manually ===
+def generate_s3_signed_url(access_key, secret_key, region, bucket, object_key, expires_in=3600):
+    method = "GET"
+    service = "s3"
+    host = f"s3.{region}.backblazeb2.com"
+    endpoint = f"https://{host}/{bucket}/{quote_plus(object_key)}"
+    now = datetime.datetime.utcnow()
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+
+    credential_scope = f"{datestamp}/{region}/{service}/aws4_request"
+    signed_headers = "host"
+    canonical_headers = f"host:{host}\n"
+    payload_hash = hashlib.sha256(b"").hexdigest()
+
+    canonical_request = "\n".join([
+        method,
+        f"/{bucket}/{object_key}",
+        "",
+        canonical_headers,
+        signed_headers,
+        payload_hash
+    ])
+
+    string_to_sign = "\n".join([
+        "AWS4-HMAC-SHA256",
+        amz_date,
+        credential_scope,
+        hashlib.sha256(canonical_request.encode()).hexdigest()
+    ])
+
+    def sign(key, msg):
+        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
+
+    date_key = sign(("AWS4" + secret_key).encode('utf-8'), datestamp)
+    date_region_key = sign(date_key, region)
+    date_region_service_key = sign(date_region_key, service)
+    signing_key = sign(date_region_service_key, "aws4_request")
+
+    signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+
+    params = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{access_key}/{credential_scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": str(expires_in),
+        "X-Amz-SignedHeaders": signed_headers,
+        "X-Amz-Signature": signature
+    }
+
+    param_str = "&".join(f"{k}={quote_plus(v)}" for k, v in params.items())
+    return f"{endpoint}?{param_str}"
+
+print("🔑 Generating signed URL...")
+signed_url = generate_s3_signed_url(
+    access_key=B2_KEY_ID,
+    secret_key=B2_APPLICATION_KEY,
+    region="us-east-005",
+    bucket=B2_BUCKET_NAME,
+    object_key=b2_filename,
+    expires_in=3600
 )
 
-encoded_filename = quote(b2_filename)
-signed_url = (
-    f"https://s3.us-east-005.backblazeb2.com/{B2_BUCKET_NAME}/{encoded_filename}"
-    f"?Authorization={download_auth.authorization_token}"
-)
+print(f"🌐 Signed Graph URL: {signed_url}")
 
-print(f"🌐 Temporary Graph URL: {signed_url}")
-
-# === Send callback ===
+# === Send webhook ===
 payload_to_zapier = {
     "student_email": student_email,
     "graph_url": signed_url,
-    "pitch_difference": "2.3 Hz",     # Placeholder value
-    "timing_difference": "0.4 sec",   # Placeholder value
+    "pitch_difference": "2.3 Hz",     # Placeholder
+    "timing_difference": "0.4 sec"    # Placeholder
 }
 
-print(f"📬 Sending result to Zapier webhook: {callback_url}")
+print(f"📬 Sending result to Zapier: {callback_url}")
 response = requests.post(callback_url, json=payload_to_zapier)
-print(f"✅ Webhook sent! Status: {response.status_code}")
-print("📨 Payload sent:", json.dumps(payload_to_zapier, indent=2))
+print(f"✅ Webhook status: {response.status_code}")
+print("📨 Sent Payload:", json.dumps(payload_to_zapier, indent=2))
+
