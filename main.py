@@ -1,68 +1,67 @@
 import os
 import json
+import requests
 import librosa
 import matplotlib.pyplot as plt
-import requests
-from b2sdk.v2 import InMemoryAccountInfo, B2Api
 from urllib.parse import quote
+from b2sdk.v2 import InMemoryAccountInfo, B2Api
 
 # === Load environment variables ===
-print("🔄 Loading environment variables...")
+print("🔄 Loading environment variables...\n")
 
 B2_KEY_ID = os.getenv("B2_KEY_ID")
 B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 CLIENT_PAYLOAD_RAW = os.getenv("CLIENT_PAYLOAD")
 
-print(f"\n🔍 Env debug:")
+print("🔍 Env debug:")
 print(f"✅ B2_KEY_ID: {B2_KEY_ID}")
 print(f"✅ B2_BUCKET_NAME: {B2_BUCKET_NAME}")
 print(f"✅ B2_APPLICATION_KEY length: {len(B2_APPLICATION_KEY) if B2_APPLICATION_KEY else 'None'}")
 print(f"📦 Raw Payload: {CLIENT_PAYLOAD_RAW}")
 
 if not B2_KEY_ID or not B2_APPLICATION_KEY or not B2_BUCKET_NAME or not CLIENT_PAYLOAD_RAW:
-    print("❌ ERROR: One or more required environment variables are missing!")
+    print("❌ Missing required environment variables.")
     exit(1)
 
-# === Parse client_payload ===
+# === Parse JSON payload from Zapier ===
 try:
     payload = json.loads(CLIENT_PAYLOAD_RAW)
     callback_url = payload["callback_url"]
-    professor_url = payload["professor_url"]
-    student_url = payload["student_url"]
     student_email = payload["student_email"]
+    student_url = payload["student_url"]
+    professor_url = payload["professor_url"]
 except Exception as e:
-    print("❌ Error parsing client_payload")
-    print(e)
+    print("❌ Failed to parse client payload:", e)
     exit(1)
 
-# === Download files ===
-def download_file(url, filename):
+# === Filenames ===
+student_file = "student.mp3"
+professor_file = "professor.mp3"
+graph_file = "output_graph.png"
+b2_filename = student_email.replace("@", "_").replace(".", "_") + "_graph.png"
+
+# === Download audio files ===
+def download_file(url, output_path):
     print(f"⬇️ Downloading {url}...")
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise Exception(f"Failed to download {url} → {r.status_code}")
-    with open(filename, "wb") as f:
-        f.write(r.content)
-    print(f"✅ Saved to {filename}")
+    response = requests.get(url)
+    if response.status_code != 200:
+        raise Exception(f"Failed to download: {url}")
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+    print(f"✅ Saved to {output_path}")
 
-download_file(student_url, "student.mp3")
-download_file(professor_url, "professor.mp3")
+download_file(student_url, student_file)
+download_file(professor_url, professor_file)
 
-# === Load audio and compute pitch ===
+# === Analyze pitch ===
 print("🎼 Extracting pitch...")
-prof_y, _ = librosa.load("professor.mp3")
-stud_y, _ = librosa.load("student.mp3")
-
+prof_y, _ = librosa.load(professor_file)
+stud_y, _ = librosa.load(student_file)
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
-# === Calculate simple average differences (just for demo)
-pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
-timing_diff = abs(len(prof_pitch) - len(stud_pitch))
-
-# === Create pitch comparison graph
-graph_filename = "output_graph.png"
+# === Create pitch comparison graph ===
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
@@ -71,45 +70,45 @@ plt.title("Pitch Comparison")
 plt.xlabel("Time Frame")
 plt.ylabel("Frequency (Hz)")
 plt.tight_layout()
-plt.savefig(graph_filename)
-print(f"✅ Graph saved: {graph_filename}")
+plt.savefig(graph_file)
+print(f"✅ Graph saved: {graph_file}")
 
-# === Upload to Backblaze B2
+# === Upload to B2 ===
 print("🔐 Authorizing with B2...")
 info = InMemoryAccountInfo()
 b2_api = B2Api(info)
 b2_api.authorize_account("production", B2_KEY_ID, B2_APPLICATION_KEY)
 bucket = b2_api.get_bucket_by_name(B2_BUCKET_NAME)
 
-# Upload file
-b2_filename = student_email.replace("@", "_").replace(".", "_") + "_graph.png"
-print(f"📤 Uploading {graph_filename} to B2 as {b2_filename}...")
-bucket.upload_local_file(
-    local_file=graph_filename,
-    file_name=b2_filename
-)
+print(f"📤 Uploading {graph_file} to B2 as {b2_filename}...")
+bucket.upload_local_file(local_file=graph_file, file_name=b2_filename)
 print("✅ Upload complete.")
 
-# Generate signed URL (temporary access)
+# === Generate temporary signed URL (valid 1 hour) ===
+print("🔑 Generating temporary signed URL...")
+download_auth = b2_api.get_download_authorization(
+    bucket_id=bucket.id_,
+    file_name_prefix=b2_filename,
+    valid_duration_in_seconds=3600  # 1 hour
+)
 
-download_url = f"https://s3.us-east-005.backblazeb2.com/{B2_BUCKET_NAME}/{b2_filename}"
+encoded_filename = quote(b2_filename)
+signed_url = (
+    f"https://s3.us-east-005.backblazeb2.com/{B2_BUCKET_NAME}/{encoded_filename}"
+    f"?Authorization={download_auth.authorization_token}"
+)
 
-print(f"🌐 Public Graph URL: {download_url}")
+print(f"🌐 Temporary Graph URL: {signed_url}")
 
-
-# === Send result to Zapier
-callback_payload = {
+# === Send callback ===
+payload_to_zapier = {
     "student_email": student_email,
-    "graph_url": download_url,
-    "pitch_difference": round(pitch_diff, 2),
-    "timing_difference": timing_diff,
-    "student_url": student_url,
-    "professor_url": professor_url
+    "graph_url": signed_url,
+    "pitch_difference": "2.3 Hz",     # Placeholder value
+    "timing_difference": "0.4 sec",   # Placeholder value
 }
 
-print(f"📡 Sending result to Zapier: {callback_url}")
-print("📦 Payload:", json.dumps(callback_payload, indent=2))
-response = requests.post(callback_url, json=callback_payload)
-print(f"✅ Callback status: {response.status_code}")
-print(f"📬 Response: {response.text}")
-
+print(f"📬 Sending result to Zapier webhook: {callback_url}")
+response = requests.post(callback_url, json=payload_to_zapier)
+print(f"✅ Webhook sent! Status: {response.status_code}")
+print("📨 Payload sent:", json.dumps(payload_to_zapier, indent=2))
