@@ -91,7 +91,8 @@ bucket.upload_local_file(
 print("✅ Upload complete.")
 
 # Generate signed URL (temporary access)
-download_url = f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{b2_filename}"
+
+download_url = f"https://s3.us-east-005.backblazeb2.com/{B2_BUCKET_NAME}/{b2_filename}"
 
 print(f"🌐 Public Graph URL: {download_url}")
 
