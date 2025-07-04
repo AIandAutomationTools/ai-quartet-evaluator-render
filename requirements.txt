@@ -6,5 +6,7 @@ requests
 boto3
 numpy
 reportlab
+fpdf
+
 
 
