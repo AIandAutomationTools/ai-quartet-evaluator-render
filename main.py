@@ -115,6 +115,7 @@ try:
         "pitch_difference": pitch_diff,
         "timing_difference": timing_diff
     }
+    print(f"🧪 Final Graph URL: {graph_url}")
 
     print(f"📡 Sending result to Zapier: {callback_url}")
     response = requests.post(callback_url, json=payload_to_zapier)
