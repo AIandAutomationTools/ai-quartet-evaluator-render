@@ -94,8 +94,7 @@ try:
 
     # === Generate temporary download URL ===
     encoded_filename = quote(b2_filename)
-    auth_token = b2_api.get_download_authorization(
-        bucket_id=bucket.id_,
+    auth_token = bucket.get_download_authorization(
         file_name_prefix=b2_filename,
         valid_duration_in_seconds=3600  # 1 hour
     )
