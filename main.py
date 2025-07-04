@@ -91,10 +91,9 @@ bucket.upload_local_file(
 print("✅ Upload complete.")
 
 # Generate signed URL (temporary access)
-endpoint = "https://s3.us-east-005.backblazeb2.com"
-auth_token = b2_api.account_info.get_account_auth_token()
-encoded_filename = quote(b2_filename)
-signed_url = f"{endpoint}/{B2_BUCKET_NAME}/{encoded_filename}?Authorization={auth_token}"
+download_url = f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{b2_filename}"
+
+
 print(f"🌐 Temporary Graph URL: {signed_url}")
 
 # === Send result to Zapier
