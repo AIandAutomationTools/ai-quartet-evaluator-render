@@ -1,6 +1,6 @@
+soundfile
 b2sdk
 librosa
 matplotlib
 requests
-soundfile
-
+boto3
