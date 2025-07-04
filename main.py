@@ -98,11 +98,12 @@ try:
         file_name_prefix=b2_filename,
         valid_duration_in_seconds=3600  # 1 hour
     )
-
     graph_url = (
-        f"https://f000.backblazeb2.com/file/{B2_BUCKET_NAME}/{encoded_filename}"
-        f"?Authorization={auth_token}"
+    f"https://s3.us-east-005.backblazeb2.com/{B2_BUCKET_NAME}/{encoded_filename}"
+    f"?Authorization={auth_token}"
     )
+
+   
     print(f"🌐 Temporary graph URL: {graph_url}")
 
     # === Send callback to Zapier ===
