@@ -4,3 +4,6 @@ librosa
 matplotlib
 requests
 boto3
+numpy
+
+
