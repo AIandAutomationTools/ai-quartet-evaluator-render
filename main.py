@@ -140,10 +140,10 @@ deepgram_text = str(deepgram_feedback or "No feedback available")
 payload_to_zapier = {
     "student_email": student_email,
     "graph_url": signed_url_graph,
-    "report_url": signed_url_pdf,
     "pitch_difference": pitch_diff_value,
     "timing_difference": timing_diff_value,
-    "deepgram_feedback": deepgram_text
+    "deepgram_feedback": deepgram_text,
+    "report_url": signed_url_pdf
 }
 
 # === Optional delay to ensure B2 URLs are accessible
