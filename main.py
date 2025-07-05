@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 import boto3
 from botocore.client import Config
 from fpdf import FPDF
-import unicodedata
-import re
+from urllib.parse import urlparse
+from datetime import datetime
 
 # === Load environment variables ===
 print("🔄 Loading environment variables...")
@@ -34,6 +34,7 @@ try:
     professor_url = payload["professor_url"]
     student_url = payload["student_url"]
     student_email = payload["student_email"]
+    student_name = payload.get("student_name", "N/A")
     deepgram_feedback = payload.get("deepgram_feedback", "No transcript feedback provided.")
 except Exception as e:
     print("❌ Error parsing client_payload")
@@ -65,24 +66,15 @@ stud_y, _ = librosa.load(student_file)
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
+# === Pitch difference ===
 pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
 timing_diff = abs(len(prof_pitch) - len(stud_pitch))
-
-# === Extract numeric score from Deepgram feedback ===
-def extract_score(text):
-    match = re.search(r'(\b\d{1,2})\s*out\s*of\s*10\b', text)
-    if match:
-        return int(match.group(1))
-    return "N/A"
-
-score = extract_score(deepgram_feedback)
 
 # === Create pitch graph ===
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
 plt.legend()
-plt.title("Pitch Comparison")
 plt.xlabel("Time Frame")
 plt.ylabel("Frequency (Hz)")
 plt.tight_layout()
@@ -94,45 +86,36 @@ print("📝 Generating PDF report...")
 pdf = FPDF()
 pdf.add_page()
 
-# === Title ===
+# Title + student info
 pdf.set_font("Arial", "B", 16)
 pdf.cell(0, 10, "Student Singing Evaluation Report", ln=True, align="C")
+pdf.ln(2)
+
+pdf.set_font("Arial", "I", 12)
+today = datetime.today().strftime("%B %d, %Y")
+pdf.cell(0, 10, f"Student: {student_name}  |  Email: {student_email}  |  Date: {today}", ln=True, align="C")
 pdf.ln(10)
 
-# === Insert Graph (no heading) ===
-if os.path.exists(output_graph):
-    pdf.image(output_graph, x=10, y=30, w=pdf.w - 20)
-    pdf.ln(80)
-else:
-    pdf.cell(0, 10, "Graph image not found.", ln=True)
+# Graph image
+pdf.image(output_graph, x=15, w=180)
+pdf.ln(10)
 
-# === Score Summary Table ===
+# Score Summary Table
 pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Score Summary", ln=True)
 pdf.set_font("Arial", "", 12)
-pdf.ln(5)
-
-pdf.set_fill_color(220, 220, 220)
-pdf.cell(60, 10, "Metric", 1, 0, "C", fill=True)
-pdf.cell(120, 10, "Value", 1, 1, "C", fill=True)
-
-pdf.cell(60, 10, "Pitch Difference (Hz)", 1)
-pdf.cell(120, 10, f"{pitch_diff:.2f}", 1, 1)
-
-pdf.cell(60, 10, "Timing Difference (frames)", 1)
-pdf.cell(120, 10, f"{timing_diff}", 1, 1)
-
-pdf.cell(60, 10, "Overall Score", 1)
-pdf.cell(120, 10, f"{score}", 1, 1)
-
-# === Feedback Section ===
+pdf.cell(60, 10, "Pitch Difference (Hz):", border=1)
+pdf.cell(0, 10, f"{pitch_diff:.2f}", border=1, ln=True)
+pdf.cell(60, 10, "Timing Difference (Frames):", border=1)
+pdf.cell(0, 10, str(timing_diff), border=1, ln=True)
 pdf.ln(10)
+
+# Deepgram feedback
 pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Transcript Feedback", ln=True)
 pdf.set_font("Arial", "", 12)
 pdf.set_fill_color(240, 240, 240)
-safe_feedback = unicodedata.normalize("NFKD", deepgram_feedback).encode("ascii", "ignore").decode("ascii")
-pdf.multi_cell(0, 10, safe_feedback, fill=True)
+pdf.multi_cell(0, 10, deepgram_feedback, fill=True)
 
 pdf.output(output_pdf)
 print(f"✅ PDF report saved: {output_pdf}")
@@ -167,17 +150,18 @@ signed_url_pdf = s3.generate_presigned_url(
 
 # === Callback to Zapier ===
 payload_to_zapier = {
+    "student_name": student_name,
     "student_email": student_email,
     "graph_url": signed_url_graph,
     "report_url": signed_url_pdf,
     "pitch_difference": round(pitch_diff, 2),
     "timing_difference": timing_diff,
-    "deepgram_feedback": safe_feedback,
-    "score": score
+    "deepgram_feedback": deepgram_feedback
 }
 
 print(f"📡 Sending result to Zapier: {callback_url}")
 response = requests.post(callback_url, json=payload_to_zapier)
 print(f"✅ Callback status: {response.status_code}")
 print(f"📬 Response: {response.text}")
+
 
