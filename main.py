@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import boto3
 from botocore.client import Config
 from fpdf import FPDF
-import unicodedata  # For sanitizing PDF text
+import unicodedata
 
 # === Load environment variables ===
 print("🔄 Loading environment variables...")
@@ -84,34 +84,33 @@ print(f"✅ Graph saved: {output_graph}")
 print("📝 Generating PDF report...")
 pdf = FPDF()
 pdf.add_page()
+
+# === Insert Graph at Top ===
+pdf.set_font("Arial", "B", 14)
+pdf.cell(0, 10, "Pitch Comparison Graph", ln=True)
+if os.path.exists(output_graph):
+    pdf.image(output_graph, x=10, y=25, w=pdf.w - 20)
+    pdf.ln(80)  # Adjust vertical spacing as needed
+else:
+    pdf.cell(0, 10, "Graph image not found.", ln=True)
+
+# === Evaluation Info ===
 pdf.set_font("Arial", "B", 16)
 pdf.cell(0, 10, "Student Singing Evaluation Report", ln=True)
-
 pdf.set_font("Arial", "", 12)
 pdf.ln(10)
 pdf.cell(0, 10, f"Student Email: {student_email}", ln=True)
 pdf.cell(0, 10, f"Pitch Difference: {pitch_diff:.2f} Hz", ln=True)
 pdf.cell(0, 10, f"Timing Difference: {timing_diff} frames", ln=True)
 
-# === Transcript Feedback ===
+# === Deepgram Feedback ===
 pdf.ln(10)
 pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Transcript Feedback (Deepgram)", ln=True)
 pdf.set_font("Arial", "", 12)
 pdf.set_fill_color(240, 240, 240)
-
-# Clean the feedback
 safe_feedback = unicodedata.normalize("NFKD", deepgram_feedback).encode("ascii", "ignore").decode("ascii")
 pdf.multi_cell(0, 10, safe_feedback, fill=True)
-
-# === Insert graph into PDF ===
-if os.path.exists(output_graph):
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "Pitch Comparison Graph", ln=True)
-    pdf.image(output_graph, x=10, y=30, w=pdf.w - 20)
-else:
-    pdf.cell(0, 10, "Graph image not found.", ln=True)
 
 pdf.output(output_pdf)
 print(f"✅ PDF report saved: {output_pdf}")
@@ -158,5 +157,4 @@ print(f"📡 Sending result to Zapier: {callback_url}")
 response = requests.post(callback_url, json=payload_to_zapier)
 print(f"✅ Callback status: {response.status_code}")
 print(f"📬 Response: {response.text}")
-
 
