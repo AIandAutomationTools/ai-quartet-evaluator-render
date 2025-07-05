@@ -8,6 +8,11 @@ from botocore.client import Config
 from fpdf import FPDF
 from urllib.parse import urlparse
 from datetime import datetime
+import unicodedata
+
+# === Helper to sanitize text for PDF (avoid unicode issues) ===
+def clean_text(text):
+    return unicodedata.normalize("NFKD", text).encode("latin1", "ignore").decode("latin1")
 
 # === Load environment variables ===
 print("🔄 Loading environment variables...")
@@ -41,7 +46,7 @@ except Exception as e:
     print(e)
     exit(1)
 
-# === Download audio files ===
+# === Download helper ===
 def download_file(url, filename):
     print(f"⬇️ Downloading {url}...")
     response = requests.get(url)
@@ -66,57 +71,69 @@ stud_y, _ = librosa.load(student_file)
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
-# === Pitch difference ===
+# === Differences ===
 pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
 timing_diff = abs(len(prof_pitch) - len(stud_pitch))
 
-# === Create pitch graph ===
+# === Create graph ===
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
 plt.legend()
+plt.title("Pitch Comparison")
 plt.xlabel("Time Frame")
 plt.ylabel("Frequency (Hz)")
 plt.tight_layout()
 plt.savefig(output_graph)
 print(f"✅ Graph saved: {output_graph}")
 
-# === Create PDF report ===
+# === PDF report ===
 print("📝 Generating PDF report...")
 pdf = FPDF()
 pdf.add_page()
 
-# Title + student info
+# Title
 pdf.set_font("Arial", "B", 16)
 pdf.cell(0, 10, "Student Singing Evaluation Report", ln=True, align="C")
-pdf.ln(2)
+pdf.ln(5)
 
-pdf.set_font("Arial", "I", 12)
-today = datetime.today().strftime("%B %d, %Y")
-pdf.cell(0, 10, f"Student: {student_name}  |  Email: {student_email}  |  Date: {today}", ln=True, align="C")
-pdf.ln(10)
+# Date
+date_str = datetime.now().strftime("%B %d, %Y")
+pdf.set_font("Arial", "", 12)
+pdf.cell(0, 10, f"Date: {date_str}", ln=True)
 
-# Graph image
-pdf.image(output_graph, x=15, w=180)
-pdf.ln(10)
+# Student Info
+pdf.cell(0, 10, f"Student Name: {student_name}", ln=True)
+pdf.cell(0, 10, f"Student Email: {student_email}", ln=True)
+pdf.ln(5)
+
+# Insert graph image
+pdf.image(output_graph, x=10, w=190)
+pdf.ln(5)
 
 # Score Summary Table
-pdf.set_font("Arial", "B", 14)
-pdf.cell(0, 10, "Score Summary", ln=True)
+pdf.set_font("Arial", "B", 12)
+pdf.cell(95, 10, "Metric", border=1)
+pdf.cell(95, 10, "Value", border=1, ln=True)
+
 pdf.set_font("Arial", "", 12)
-pdf.cell(60, 10, "Pitch Difference (Hz):", border=1)
-pdf.cell(0, 10, f"{pitch_diff:.2f}", border=1, ln=True)
-pdf.cell(60, 10, "Timing Difference (Frames):", border=1)
-pdf.cell(0, 10, str(timing_diff), border=1, ln=True)
+pdf.cell(95, 10, "Pitch Difference (Hz)", border=1)
+pdf.cell(95, 10, f"{pitch_diff:.2f}", border=1, ln=True)
+
+pdf.cell(95, 10, "Timing Difference (frames)", border=1)
+pdf.cell(95, 10, str(timing_diff), border=1, ln=True)
+
 pdf.ln(10)
 
-# Deepgram feedback
+# Deepgram Feedback
 pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Transcript Feedback", ln=True)
+
 pdf.set_font("Arial", "", 12)
 pdf.set_fill_color(240, 240, 240)
-pdf.multi_cell(0, 10, deepgram_feedback, fill=True)
+pdf.multi_cell(0, 10, clean_text(deepgram_feedback), fill=True)
 
+# Save report
 pdf.output(output_pdf)
 print(f"✅ PDF report saved: {output_pdf}")
 
@@ -150,8 +167,8 @@ signed_url_pdf = s3.generate_presigned_url(
 
 # === Callback to Zapier ===
 payload_to_zapier = {
-    "student_name": student_name,
     "student_email": student_email,
+    "student_name": student_name,
     "graph_url": signed_url_graph,
     "report_url": signed_url_pdf,
     "pitch_difference": round(pitch_diff, 2),
