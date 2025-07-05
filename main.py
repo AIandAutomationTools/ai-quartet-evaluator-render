@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import boto3
 from botocore.client import Config
 from fpdf import FPDF
-import time
+import unicodedata  # ✅ For text sanitization
 
 # === Load environment variables ===
 print("🔄 Loading environment variables...")
@@ -93,12 +93,16 @@ pdf.cell(0, 10, f"Student Email: {student_email}", ln=True)
 pdf.cell(0, 10, f"Pitch Difference: {pitch_diff:.2f} Hz", ln=True)
 pdf.cell(0, 10, f"Timing Difference: {timing_diff} frames", ln=True)
 
+# ✅ Sanitize Deepgram feedback
 pdf.ln(10)
 pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Transcript Feedback (Deepgram)", ln=True)
 pdf.set_font("Arial", "", 12)
 pdf.set_fill_color(240, 240, 240)
-pdf.multi_cell(0, 10, str(deepgram_feedback), fill=True)
+
+# ✅ Normalize to ASCII to avoid UnicodeEncodeError
+safe_feedback = unicodedata.normalize("NFKD", deepgram_feedback).encode("ascii", "ignore").decode("ascii")
+pdf.multi_cell(0, 10, safe_feedback, fill=True)
 
 pdf.output(output_pdf)
 print(f"✅ PDF report saved: {output_pdf}")
@@ -131,33 +135,19 @@ signed_url_pdf = s3.generate_presigned_url(
     ExpiresIn=3600
 )
 
-# === Build Final Payload ===
-print("🧩 Building final payload...")
-pitch_diff_value = round(pitch_diff, 2)
-timing_diff_value = int(timing_diff)
-deepgram_text = str(deepgram_feedback or "No feedback available")
-
+# === Callback to Zapier ===
 payload_to_zapier = {
     "student_email": student_email,
     "graph_url": signed_url_graph,
-    "pitch_difference": pitch_diff_value,
-    "timing_difference": timing_diff_value,
-    "deepgram_feedback": deepgram_text,
-    "report_url": signed_url_pdf
+    "report_url": signed_url_pdf,
+    "pitch_difference": round(pitch_diff, 2),
+    "timing_difference": timing_diff,
+    "deepgram_feedback": safe_feedback
 }
 
-# === Optional delay to ensure B2 URLs are accessible
-print("⏳ Waiting 2 seconds before sending to Zapier...")
-time.sleep(2)
-
-# === Send to Zapier webhook ===
-print(f"📡 Sending final payload to Zapier: {callback_url}")
-try:
-    response = requests.post(callback_url, json=payload_to_zapier)
-    print(f"✅ Callback status: {response.status_code}")
-    print(f"📬 Response: {response.text}")
-except Exception as e:
-    print(f"❌ Error sending to Zapier: {e}")
-    exit(1)
+print(f"📡 Sending result to Zapier: {callback_url}")
+response = requests.post(callback_url, json=payload_to_zapier)
+print(f"✅ Callback status: {response.status_code}")
+print(f"📬 Response: {response.text}")
 
 
