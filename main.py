@@ -139,8 +139,6 @@ signed_url_pdf = s3.generate_presigned_url(
 # === Send to Zapier Webhook ===
 payload_to_zapier = {
     "student_email": student_email,
-    "student_url": student_url,
-    "professor_url": professor_url,
     "graph_url": signed_url_graph,
     "report_url": signed_url_pdf,
     "pitch_difference": round(pitch_diff, 2),
