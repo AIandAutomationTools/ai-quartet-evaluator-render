@@ -1,6 +1,60 @@
-# ... [same imports and setup code] ...
+import os
+import json
+import requests
+import librosa
+import matplotlib.pyplot as plt
+import boto3
+from botocore.client import Config
+from fpdf import FPDF
+from urllib.parse import urlparse
 
-# === Download files ===
+# === Load environment variables ===
+print("🔄 Loading environment variables...")
+
+B2_KEY_ID = os.getenv("B2_KEY_ID")
+B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
+B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
+CLIENT_PAYLOAD_RAW = os.getenv("CLIENT_PAYLOAD")
+
+print(f"\n🔍 Env debug:")
+print(f"✅ B2_KEY_ID: {B2_KEY_ID}")
+print(f"✅ B2_BUCKET_NAME: {B2_BUCKET_NAME}")
+print(f"✅ B2_APPLICATION_KEY length: {len(B2_APPLICATION_KEY) if B2_APPLICATION_KEY else 'None'}")
+print(f"📦 Raw Payload: {CLIENT_PAYLOAD_RAW}")
+
+if not B2_KEY_ID or not B2_APPLICATION_KEY or not B2_BUCKET_NAME or not CLIENT_PAYLOAD_RAW:
+    print("❌ ERROR: One or more required environment variables are missing!")
+    exit(1)
+
+# === Parse payload ===
+try:
+    payload = json.loads(CLIENT_PAYLOAD_RAW)
+    callback_url = payload["callback_url"]
+    professor_url = payload["professor_url"]
+    student_url = payload["student_url"]
+    student_email = payload["student_email"]
+    deepgram_feedback = payload.get("deepgram_feedback", "No transcript feedback provided.")
+except Exception as e:
+    print("❌ Error parsing client_payload")
+    print(e)
+    exit(1)
+
+# === File paths ===
+professor_file = "professor.mp3"
+student_file = "student.mp3"
+output_graph = "output_graph.png"
+output_pdf = "student_report.pdf"
+b2_filename_graph = student_email.replace("@", "_").replace(".", "_") + "_graph.png"
+b2_filename_pdf = student_email.replace("@", "_").replace(".", "_") + "_report.pdf"
+
+# === Download audio files ===
+def download_file(url, filename):
+    print(f"⬇️ Downloading {url}...")
+    response = requests.get(url)
+    with open(filename, "wb") as f:
+        f.write(response.content)
+    print(f"✅ Saved to {filename}")
+
 download_file(student_url, student_file)
 download_file(professor_url, professor_file)
 
@@ -19,7 +73,7 @@ stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.not
 pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
 timing_diff = abs(len(prof_pitch) - len(stud_pitch))
 
-# === Create Graph ===
+# === Create pitch comparison graph ===
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
@@ -31,7 +85,7 @@ plt.tight_layout()
 plt.savefig(output_graph)
 print(f"✅ Graph saved: {output_graph}")
 
-# === Create PDF ===
+# === Create PDF Report ===
 print("📝 Generating PDF report...")
 pdf = FPDF()
 pdf.add_page()
@@ -52,10 +106,10 @@ pdf.set_fill_color(240, 240, 240)
 pdf.multi_cell(0, 10, deepgram_feedback, fill=True)
 
 pdf.output(output_pdf)
-print(f"✅ PDF saved: {output_pdf}")
+print(f"✅ PDF report saved: {output_pdf}")
 
 # === Upload to B2 ===
-print("🔐 Uploading to B2...")
+print("🔐 Uploading to B2 via S3 API...")
 s3 = boto3.client(
     's3',
     endpoint_url='https://s3.us-east-005.backblazeb2.com',
@@ -68,7 +122,8 @@ s3 = boto3.client(
 s3.upload_file(output_graph, B2_BUCKET_NAME, b2_filename_graph)
 s3.upload_file(output_pdf, B2_BUCKET_NAME, b2_filename_pdf)
 
-# === Generate Signed URLs ===
+# === Generate signed URLs ===
+print("🔑 Generating signed URLs...")
 signed_url_graph = s3.generate_presigned_url(
     'get_object',
     Params={'Bucket': B2_BUCKET_NAME, 'Key': b2_filename_graph},
@@ -101,5 +156,6 @@ try:
 except Exception as e:
     print(f"❌ Error sending to Zapier: {e}")
     exit(1)
+
 
 
