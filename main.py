@@ -85,28 +85,31 @@ print("📝 Generating PDF report...")
 pdf = FPDF()
 pdf.add_page()
 
-# === Insert Graph at Top ===
+# === Title at Top of Page ===
+pdf.set_font("Arial", "B", 16)
+pdf.cell(0, 10, "Student Singing Evaluation Report", ln=True, align="C")
+pdf.ln(10)
+
+# === Insert Graph ===
 pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Pitch Comparison Graph", ln=True)
 if os.path.exists(output_graph):
-    pdf.image(output_graph, x=10, y=25, w=pdf.w - 20)
-    pdf.ln(80)  # Adjust vertical spacing as needed
+    pdf.image(output_graph, x=10, y=35, w=pdf.w - 20)
+    pdf.ln(80)
 else:
     pdf.cell(0, 10, "Graph image not found.", ln=True)
 
 # === Evaluation Info ===
-pdf.set_font("Arial", "B", 16)
-pdf.cell(0, 10, "Student Singing Evaluation Report", ln=True)
 pdf.set_font("Arial", "", 12)
 pdf.ln(10)
 pdf.cell(0, 10, f"Student Email: {student_email}", ln=True)
 pdf.cell(0, 10, f"Pitch Difference: {pitch_diff:.2f} Hz", ln=True)
 pdf.cell(0, 10, f"Timing Difference: {timing_diff} frames", ln=True)
 
-# === Deepgram Feedback ===
+# === Feedback ===
 pdf.ln(10)
 pdf.set_font("Arial", "B", 14)
-pdf.cell(0, 10, "Transcript Feedback (Deepgram)", ln=True)
+pdf.cell(0, 10, "Transcript Feedback", ln=True)
 pdf.set_font("Arial", "", 12)
 pdf.set_fill_color(240, 240, 240)
 safe_feedback = unicodedata.normalize("NFKD", deepgram_feedback).encode("ascii", "ignore").decode("ascii")
