@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import boto3
 from botocore.client import Config
 from fpdf import FPDF
-from urllib.parse import urlparse
+import time
 
 # === Load environment variables ===
 print("🔄 Loading environment variables...")
@@ -39,14 +39,6 @@ except Exception as e:
     print(e)
     exit(1)
 
-# === File paths ===
-professor_file = "professor.mp3"
-student_file = "student.mp3"
-output_graph = "output_graph.png"
-output_pdf = "student_report.pdf"
-b2_filename_graph = student_email.replace("@", "_").replace(".", "_") + "_graph.png"
-b2_filename_pdf = student_email.replace("@", "_").replace(".", "_") + "_report.pdf"
-
 # === Download audio files ===
 def download_file(url, filename):
     print(f"⬇️ Downloading {url}...")
@@ -55,25 +47,28 @@ def download_file(url, filename):
         f.write(response.content)
     print(f"✅ Saved to {filename}")
 
+professor_file = "professor.mp3"
+student_file = "student.mp3"
+output_graph = "output_graph.png"
+output_pdf = "student_report.pdf"
+b2_filename_graph = student_email.replace("@", "_").replace(".", "_") + "_graph.png"
+b2_filename_pdf = student_email.replace("@", "_").replace(".", "_") + "_report.pdf"
+
 download_file(student_url, student_file)
 download_file(professor_url, professor_file)
 
 # === Pitch analysis ===
 print("🎼 Extracting pitch...")
-try:
-    prof_y, _ = librosa.load(professor_file)
-    stud_y, _ = librosa.load(student_file)
-except Exception as e:
-    print(f"❌ Error loading audio: {e}")
-    exit(1)
-
+prof_y, _ = librosa.load(professor_file)
+stud_y, _ = librosa.load(student_file)
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
+# === Pitch difference ===
 pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
 timing_diff = abs(len(prof_pitch) - len(stud_pitch))
 
-# === Create pitch comparison graph ===
+# === Create pitch graph ===
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
@@ -85,7 +80,7 @@ plt.tight_layout()
 plt.savefig(output_graph)
 print(f"✅ Graph saved: {output_graph}")
 
-# === Create PDF Report ===
+# === Create PDF report ===
 print("📝 Generating PDF report...")
 pdf = FPDF()
 pdf.add_page()
@@ -103,7 +98,7 @@ pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Transcript Feedback (Deepgram)", ln=True)
 pdf.set_font("Arial", "", 12)
 pdf.set_fill_color(240, 240, 240)
-pdf.multi_cell(0, 10, deepgram_feedback, fill=True)
+pdf.multi_cell(0, 10, str(deepgram_feedback), fill=True)
 
 pdf.output(output_pdf)
 print(f"✅ PDF report saved: {output_pdf}")
@@ -136,17 +131,27 @@ signed_url_pdf = s3.generate_presigned_url(
     ExpiresIn=3600
 )
 
-# === Send to Zapier Webhook ===
+# === Build Final Payload ===
+print("🧩 Building final payload...")
+pitch_diff_value = round(pitch_diff, 2)
+timing_diff_value = int(timing_diff)
+deepgram_text = str(deepgram_feedback or "No feedback available")
+
 payload_to_zapier = {
     "student_email": student_email,
     "graph_url": signed_url_graph,
     "report_url": signed_url_pdf,
-    "pitch_difference": round(pitch_diff, 2),
-    "timing_difference": timing_diff,
-    "deepgram_feedback": deepgram_feedback
+    "pitch_difference": pitch_diff_value,
+    "timing_difference": timing_diff_value,
+    "deepgram_feedback": deepgram_text
 }
 
-print(f"📡 Sending full payload to Zapier: {callback_url}")
+# === Optional delay to ensure B2 URLs are accessible
+print("⏳ Waiting 2 seconds before sending to Zapier...")
+time.sleep(2)
+
+# === Send to Zapier webhook ===
+print(f"📡 Sending final payload to Zapier: {callback_url}")
 try:
     response = requests.post(callback_url, json=payload_to_zapier)
     print(f"✅ Callback status: {response.status_code}")
@@ -154,6 +159,5 @@ try:
 except Exception as e:
     print(f"❌ Error sending to Zapier: {e}")
     exit(1)
-
 
 
