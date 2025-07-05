@@ -34,6 +34,7 @@ try:
     professor_url = payload["professor_url"]
     student_url = payload["student_url"]
     student_email = payload["student_email"]
+    student_name = payload.get("student_name", "N/A")
     deepgram_feedback = payload.get("deepgram_feedback", "No transcript feedback provided.")
 except Exception as e:
     print("❌ Error parsing client_payload")
@@ -97,11 +98,17 @@ pdf.add_page()
 # === Title ===
 pdf.set_font("Arial", "B", 16)
 pdf.cell(0, 10, "Student Singing Evaluation Report", ln=True, align="C")
-pdf.ln(10)
+pdf.ln(5)
 
-# === Insert Graph (no heading) ===
+# === Student Name & Email ===
+pdf.set_font("Arial", "", 12)
+pdf.cell(0, 10, f"Student Name: {student_name}", ln=True)
+pdf.cell(0, 10, f"Student Email: {student_email}", ln=True)
+pdf.ln(5)
+
+# === Insert Graph ===
 if os.path.exists(output_graph):
-    pdf.image(output_graph, x=10, y=30, w=pdf.w - 20)
+    pdf.image(output_graph, x=10, y=pdf.get_y(), w=pdf.w - 20)
     pdf.ln(80)
 else:
     pdf.cell(0, 10, "Graph image not found.", ln=True)
@@ -167,6 +174,7 @@ signed_url_pdf = s3.generate_presigned_url(
 
 # === Callback to Zapier ===
 payload_to_zapier = {
+    "student_name": student_name,
     "student_email": student_email,
     "graph_url": signed_url_graph,
     "report_url": signed_url_pdf,
