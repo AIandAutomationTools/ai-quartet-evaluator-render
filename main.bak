@@ -7,6 +7,7 @@ import boto3
 from botocore.client import Config
 from fpdf import FPDF
 import unicodedata
+import re
 
 # === Load environment variables ===
 print("🔄 Loading environment variables...")
@@ -64,9 +65,17 @@ stud_y, _ = librosa.load(student_file)
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
-# === Pitch difference ===
 pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
 timing_diff = abs(len(prof_pitch) - len(stud_pitch))
+
+# === Extract numeric score from Deepgram feedback ===
+def extract_score(text):
+    match = re.search(r'(\b\d{1,2})\s*out\s*of\s*10\b', text)
+    if match:
+        return int(match.group(1))
+    return "N/A"
+
+score = extract_score(deepgram_feedback)
 
 # === Create pitch graph ===
 plt.figure(figsize=(10, 4))
@@ -85,28 +94,38 @@ print("📝 Generating PDF report...")
 pdf = FPDF()
 pdf.add_page()
 
-# === Title at Top of Page ===
+# === Title ===
 pdf.set_font("Arial", "B", 16)
 pdf.cell(0, 10, "Student Singing Evaluation Report", ln=True, align="C")
 pdf.ln(10)
 
-# === Insert Graph ===
-pdf.set_font("Arial", "B", 14)
-pdf.cell(0, 10, "Pitch Comparison Graph", ln=True)
+# === Insert Graph (no heading) ===
 if os.path.exists(output_graph):
-    pdf.image(output_graph, x=10, y=35, w=pdf.w - 20)
+    pdf.image(output_graph, x=10, y=30, w=pdf.w - 20)
     pdf.ln(80)
 else:
     pdf.cell(0, 10, "Graph image not found.", ln=True)
 
-# === Evaluation Info ===
+# === Score Summary Table ===
+pdf.set_font("Arial", "B", 14)
+pdf.cell(0, 10, "Score Summary", ln=True)
 pdf.set_font("Arial", "", 12)
-pdf.ln(10)
-pdf.cell(0, 10, f"Student Email: {student_email}", ln=True)
-pdf.cell(0, 10, f"Pitch Difference: {pitch_diff:.2f} Hz", ln=True)
-pdf.cell(0, 10, f"Timing Difference: {timing_diff} frames", ln=True)
+pdf.ln(5)
 
-# === Feedback ===
+pdf.set_fill_color(220, 220, 220)
+pdf.cell(60, 10, "Metric", 1, 0, "C", fill=True)
+pdf.cell(120, 10, "Value", 1, 1, "C", fill=True)
+
+pdf.cell(60, 10, "Pitch Difference (Hz)", 1)
+pdf.cell(120, 10, f"{pitch_diff:.2f}", 1, 1)
+
+pdf.cell(60, 10, "Timing Difference (frames)", 1)
+pdf.cell(120, 10, f"{timing_diff}", 1, 1)
+
+pdf.cell(60, 10, "Overall Score", 1)
+pdf.cell(120, 10, f"{score}", 1, 1)
+
+# === Feedback Section ===
 pdf.ln(10)
 pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Transcript Feedback", ln=True)
@@ -153,12 +172,12 @@ payload_to_zapier = {
     "report_url": signed_url_pdf,
     "pitch_difference": round(pitch_diff, 2),
     "timing_difference": timing_diff,
-    "deepgram_feedback": safe_feedback
+    "deepgram_feedback": safe_feedback,
+    "score": score
 }
 
 print(f"📡 Sending result to Zapier: {callback_url}")
 response = requests.post(callback_url, json=payload_to_zapier)
 print(f"✅ Callback status: {response.status_code}")
 print(f"📬 Response: {response.text}")
-
 
