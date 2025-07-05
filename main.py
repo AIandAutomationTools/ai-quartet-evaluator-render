@@ -8,11 +8,6 @@ from botocore.client import Config
 from fpdf import FPDF
 from urllib.parse import urlparse
 from datetime import datetime
-import unicodedata
-
-# === Helper to sanitize text for PDF (avoid unicode issues) ===
-def clean_text(text):
-    return unicodedata.normalize("NFKD", text).encode("latin1", "ignore").decode("latin1")
 
 # === Load environment variables ===
 print("🔄 Loading environment variables...")
@@ -39,14 +34,14 @@ try:
     professor_url = payload["professor_url"]
     student_url = payload["student_url"]
     student_email = payload["student_email"]
-    student_name = payload.get("student_name", "N/A")
+    student_name = payload.get("student_name", "Unnamed Student")
     deepgram_feedback = payload.get("deepgram_feedback", "No transcript feedback provided.")
 except Exception as e:
     print("❌ Error parsing client_payload")
     print(e)
     exit(1)
 
-# === Download helper ===
+# === Download audio files ===
 def download_file(url, filename):
     print(f"⬇️ Downloading {url}...")
     response = requests.get(url)
@@ -71,11 +66,11 @@ stud_y, _ = librosa.load(student_file)
 prof_pitch = librosa.yin(prof_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 stud_pitch = librosa.yin(stud_y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
 
-# === Differences ===
+# === Pitch difference ===
 pitch_diff = abs(prof_pitch.mean() - stud_pitch.mean())
 timing_diff = abs(len(prof_pitch) - len(stud_pitch))
 
-# === Create graph ===
+# === Create pitch graph ===
 plt.figure(figsize=(10, 4))
 plt.plot(prof_pitch, label="Professor", alpha=0.7)
 plt.plot(stud_pitch, label="Student", alpha=0.7)
@@ -87,31 +82,41 @@ plt.tight_layout()
 plt.savefig(output_graph)
 print(f"✅ Graph saved: {output_graph}")
 
-# === PDF report ===
+# === Clean text for PDF ===
+def clean_text(text):
+    return text.encode('latin-1', 'replace').decode('latin-1')
+
+# === Create PDF report ===
 print("📝 Generating PDF report...")
 pdf = FPDF()
 pdf.add_page()
 
+# Logo
+logo_path = "logo.png"
+if os.path.exists(logo_path):
+    pdf.image(logo_path, x=10, y=10, w=30)
+    pdf.set_xy(50, 10)
+else:
+    print("⚠️ Logo file not found. Skipping logo.")
+
 # Title
 pdf.set_font("Arial", "B", 16)
 pdf.cell(0, 10, "Student Singing Evaluation Report", ln=True, align="C")
-pdf.ln(5)
+pdf.ln(15)
 
 # Date
 date_str = datetime.now().strftime("%B %d, %Y")
 pdf.set_font("Arial", "", 12)
 pdf.cell(0, 10, f"Date: {date_str}", ln=True)
-
-# Student Info
 pdf.cell(0, 10, f"Student Name: {student_name}", ln=True)
 pdf.cell(0, 10, f"Student Email: {student_email}", ln=True)
 pdf.ln(5)
 
-# Insert graph image
+# Insert Graph
 pdf.image(output_graph, x=10, w=190)
 pdf.ln(5)
 
-# Score Summary Table
+# Score Table
 pdf.set_font("Arial", "B", 12)
 pdf.cell(95, 10, "Metric", border=1)
 pdf.cell(95, 10, "Value", border=1, ln=True)
@@ -128,12 +133,17 @@ pdf.ln(10)
 # Deepgram Feedback
 pdf.set_font("Arial", "B", 14)
 pdf.cell(0, 10, "Transcript Feedback", ln=True)
-
 pdf.set_font("Arial", "", 12)
 pdf.set_fill_color(240, 240, 240)
 pdf.multi_cell(0, 10, clean_text(deepgram_feedback), fill=True)
 
-# Save report
+# Link to Webpage
+pdf.ln(10)
+pdf.set_text_color(0, 0, 255)
+pdf.set_font("Arial", "I", 12)
+pdf.cell(0, 10, "Visit your evaluation page", ln=True, link="https://aiandautomationtools.com/ai-quartet-singing-evaluation-agent/")
+pdf.set_text_color(0, 0, 0)
+
 pdf.output(output_pdf)
 print(f"✅ PDF report saved: {output_pdf}")
 
